@@ -198,14 +198,16 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
     """Entidade que representa a central como um todo (todas as partições)."""
 
     _attr_translation_key = "central"
-    _attr_supported_features = (
-        AlarmControlPanelEntityFeature.ARM_AWAY | AlarmControlPanelEntityFeature.ARM_HOME
-    )
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_central"
         self._attr_name = None  # usa o nome do dispositivo
+        # Modo Stay (armed_home) só é oferecido em modelos confirmados como
+        # suportando de verdade o comando 0x50 — ver coordinator.supports_stay.
+        self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+        if coordinator.supports_stay:
+            self._attr_supported_features |= AlarmControlPanelEntityFeature.ARM_HOME
 
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
@@ -242,6 +244,11 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
         await self.coordinator.async_arm(None, stay=False, password=password)
 
     async def async_alarm_arm_home(self, code: str | None = None) -> None:
+        if not self.coordinator.supports_stay:
+            raise HomeAssistantError(
+                "Este modelo não suporta ativação em modo Stay (armed_home) — "
+                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+            )
         password = self._resolve_password(code, self._require_code_arm)
         await self.coordinator.async_arm(None, stay=True, password=password)
 
@@ -254,10 +261,6 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
     7.1, mas reproduzido do fluxo Node-RED original (ver protocol.cmd_arm).
     """
 
-    _attr_supported_features = (
-        AlarmControlPanelEntityFeature.ARM_AWAY | AlarmControlPanelEntityFeature.ARM_HOME
-    )
-
     def __init__(
         self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, partition: str
     ) -> None:
@@ -266,6 +269,10 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         self._attr_unique_id = f"{entry.entry_id}_partition_{partition.lower()}"
         self._attr_name = PARTITION_NAMES[partition]
         self._attr_translation_key = "partition"
+        # Mesma restrição de modo Stay da central — ver coordinator.supports_stay.
+        self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+        if coordinator.supports_stay:
+            self._attr_supported_features |= AlarmControlPanelEntityFeature.ARM_HOME
 
     @property
     def alarm_state(self) -> AlarmControlPanelState | None:
@@ -294,5 +301,10 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         await self.coordinator.async_arm(self._partition, stay=False, password=password)
 
     async def async_alarm_arm_home(self, code: str | None = None) -> None:
+        if not self.coordinator.supports_stay:
+            raise HomeAssistantError(
+                "Este modelo não suporta ativação em modo Stay (armed_home) — "
+                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+            )
         password = self._resolve_password(code, self._require_code_arm, self._partition)
         await self.coordinator.async_arm(self._partition, stay=True, password=password)

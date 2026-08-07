@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IntelbrasAlarmData
-from .const import DOMAIN, MANUFACTURER
+from .const import DOMAIN, MANUFACTURER, zone_enabled_by_default
 from .coordinator import IntelbrasAlarmCoordinator
 
 DIAGNOSTIC_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
@@ -237,6 +237,7 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
         self._zone = zone
         self._attr_unique_id = f"{entry.entry_id}_zone_{zone}"
         self._attr_device_info = _device_info(entry)
+        self._attr_entity_registry_enabled_default = zone_enabled_by_default(zone)
 
     @property
     def name(self) -> str:

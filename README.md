@@ -98,12 +98,12 @@ usado anteriormente.
 
 | Plataforma | Entidade | Observações |
 |---|---|---|
-| `alarm_control_panel` | Central (dispositivo principal) | estados: `disarmed`, `armed_away`, `armed_home`, `triggered` |
-| `alarm_control_panel` | Partição A/B (e C/D na 4010) | uma entidade por partição, só criada se a central estiver **particionada** (`<Partição habilitada>` = 1); estados: `disarmed`, `armed_away`, `armed_home`, `triggered` |
+| `alarm_control_panel` | Central (dispositivo principal) | estados: `disarmed`, `armed_away`, `armed_home`, `triggered` — `armed_home` só disponível em AMT 4010 SMART e AMT 2018 E SMART (ver seção "Modo Stay por partição") |
+| `alarm_control_panel` | Partição A/B (e C/D na 4010) | uma entidade por partição, só criada se a central estiver **particionada** (`<Partição habilitada>` = 1); mesmos estados e mesma restrição de `armed_home` por modelo da central acima |
 | `switch` | PGM 1..N | N = 2 (2018/1016/SMART) ou até 19 (4010, conforme expansoras); comando `0x50`. **PGM 4 a 19 vêm desabilitadas por padrão** (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa) — a funcionalidade existe para as 19, mas a central não informa quantas expansoras existem de verdade, então evitamos poluir a lista com entidades provavelmente inúteis |
 | `switch` | Sirene | comandos `0x43`/`0x63`; status lido do Status38 bit 2 (2018/1016) ou Status46 bit 2 (4010) |
 | `switch` (categoria **Configuração**) | Conexão com a central | liga/desliga a comunicação TCP (manutenção/teste); ao desligar, as demais entidades ficam indisponíveis; **estado persistido** — se desligado antes de um reinício do Home Assistant, permanece desligado e não tenta reconectar automaticamente (ver seção "Comportamento em reinícios" abaixo) |
-| `binary_sensor` | Zona 01..N (`device_class: opening`) | N = zonas nativas do modelo; atributos: violada, anulada/bypass, bateria baixa |
+| `binary_sensor` | Zona 01..N (`device_class: opening`) | N = 48 (toda a família 2018/1016) ou 64 (4010) — limite do protocolo por família, igual ao fluxo Node-RED original e à documentação. **Zonas 1-8 e 17-24 nascem habilitadas**; as demais são criadas desabilitadas (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa) — evita poluir a lista com zonas que a maioria das instalações não tem cabeadas. Atributos: violada, anulada/bypass, bateria baixa |
 | `binary_sensor` | Central disparada | bit 6 do Status23/30 **E** sirene realmente tocando (Status38/46 bit 2) — ver seção "Leitura do Status22/23" |
 | `binary_sensor` | Alguma zona aberta | bit 2 do Status23/30 — sinal rápido agregado; diferente do bitmap por zona (Zona 01..N acima) e do contador `sensor` Zonas abertas |
 | `binary_sensor` | Particionamento habilitado | reflete `<Partição habilitada>` (Status21/27) |
@@ -322,6 +322,17 @@ tanto na central quanto em cada partição.
 > nesse ponto específico, o comportamento de campo do fluxo Node-RED é
 > mais confiável do que a tabela da doc, que simplesmente não cobre esse
 > caso.
+
+**Restrição por modelo, confirmada em testes**: o modo Stay só funciona de
+verdade na **AMT 4010 SMART** e na **AMT 2018 E SMART** — nos demais
+modelos da família 2018 (AMT 2018 E/EG, AMT 1016 NET, AMN 24 NET), o
+comando `0x50` existe no protocolo, mas a central não implementa esse
+modo. Por isso, `armed_home` só aparece como opção nas entidades
+`alarm_control_panel` (central e partições) para esses dois modelos —
+nos demais, a feature nem é oferecida na UI (`ARM_HOME` fica de fora de
+`supported_features`), e o método correspondente também recusa a chamada
+com um erro claro, caso seja invocado diretamente por um serviço
+(`coordinator.supports_stay`, verificado em `alarm_control_panel.py`).
 
 ---
 

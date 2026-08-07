@@ -96,26 +96,46 @@ MODEL_2018_SMART = "amt_2018_smart"
 MODEL_4010_SMART = "amt_4010_smart"
 MODEL_UNKNOWN = "unknown"
 
-# model_byte -> (chave do modelo, nome amigável, família, nº de zonas nativo
-# do modelo — usado para limitar quantas entidades de zona são criadas —,
-# nº de partições). Os números de zona seguem as especificações de produto
-# publicadas pela Intelbras para cada central; o array de bits do protocolo
-# suporta mais zonas do que algumas centrais fisicamente oferecem (ver
-# FAMILY_MAX_ZONES), por isso os dois valores são mantidos separados.
+# model_byte -> (chave do modelo, nome amigável, família, nº de zonas
+# criadas como entidade, nº de partições). Confirmado com o usuário: o nº
+# de zonas segue o limite do protocolo por família (48 na 2018/1016, 64 na
+# 4010 — igual ao fluxo Node-RED original e à documentação), não uma
+# estimativa por modelo específico. Só as primeiras 16 nascem habilitadas
+# por padrão no Home Assistant (ver ZONE_ENABLED_BY_DEFAULT_COUNT); as
+# demais são criadas desabilitadas, para o usuário ativar as que usar.
 MODEL_TABLE: dict[int, tuple[str, str, str, int, int]] = {
-    0x1E: (MODEL_2018_EG, "AMT 2018 E/EG", FAMILY_2018, 18, 2),
-    0x61: (MODEL_1016_NET, "AMT 1016 NET", FAMILY_2018, 16, 2),
-    0x24: (MODEL_AMN24_NET, "AMN 24 NET", FAMILY_2018, 24, 2),
-    0x34: (MODEL_2018_SMART, "AMT 2018 E SMART", FAMILY_2018, 18, 2),
+    0x1E: (MODEL_2018_EG, "AMT 2018 E/EG", FAMILY_2018, 48, 2),
+    0x61: (MODEL_1016_NET, "AMT 1016 NET", FAMILY_2018, 48, 2),
+    0x24: (MODEL_AMN24_NET, "AMN 24 NET", FAMILY_2018, 48, 2),
+    0x34: (MODEL_2018_SMART, "AMT 2018 E SMART", FAMILY_2018, 48, 2),
     0x41: (MODEL_4010_SMART, "AMT 4010 SMART", FAMILY_4010, 64, 4),
 }
 
-# chave do modelo -> nº de zonas nativo (usado para criar as entidades de
-# zona; deriva de MODEL_TABLE para manter uma única fonte de verdade)
+# chave do modelo -> nº de zonas a criar como entidade (deriva de
+# MODEL_TABLE para manter uma única fonte de verdade)
 MODEL_ZONE_COUNT: dict[str, int] = {row[0]: row[3] for row in MODEL_TABLE.values()}
 
+# Nº de zonas iniciais (1..N) que nascem habilitadas por padrão no registro
+# de entidades do Home Assistant — as demais (até o total de
+# MODEL_ZONE_COUNT) são criadas desabilitadas.
+# Zonas 1-8 e 17-24 nascem habilitadas por padrão no Home Assistant (as
+# faixas mais comumente cabeadas nativamente nos quadros de zona
+# Intelbras); as demais são criadas desabilitadas, para o usuário ativar
+# manualmente as que sua instalação realmente usa (Configurações →
+# Entidades → mostrar desabilitadas).
+def zone_enabled_by_default(zone: int) -> bool:
+    return (1 <= zone <= 8) or (17 <= zone <= 24)
+
+# Modelos cujo comando de ativação em modo Stay (0x50) é suportado de
+# verdade pela central — confirmado pelo usuário: só a família 4010 e a
+# variante "SMART" da 2018 respondem corretamente a esse comando; nas
+# demais (2018 E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo
+# mas a central não implementa esse modo de fato.
+MODELS_SUPPORTING_STAY = {MODEL_4010_SMART, MODEL_2018_SMART}
+
 # Nº máximo de zonas cobertas pelos bytes de status de cada família (limite
-# do protocolo, não do modelo — ver MODEL_ZONE_COUNT para o nº de entidades)
+# do protocolo — ver MODEL_ZONE_COUNT para o nº de entidades por modelo,
+# que hoje coincide com este valor para todos os modelos suportados)
 FAMILY_MAX_ZONES = {FAMILY_2018: 48, FAMILY_4010: 64}
 FAMILY_STATUS_CMD = {FAMILY_2018: CMD_STATUS_PARTIAL, FAMILY_4010: CMD_STATUS_FULL}
 FAMILY_STATUS_LEN = {FAMILY_2018: 43, FAMILY_4010: 54}

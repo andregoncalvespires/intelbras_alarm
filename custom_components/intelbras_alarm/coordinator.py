@@ -125,6 +125,20 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         return self.family == FAMILY_4010
 
     @property
+    def supports_stay(self) -> bool:
+        """Se este modelo suporta de verdade o comando de ativação em modo Stay.
+
+        Confirmado pelo usuário: só a 4010 e a 2018 E SMART respondem
+        corretamente ao comando 0x50 — nos demais modelos da família 2018
+        (E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo mas a
+        central não implementa esse modo. Usado para remover a opção
+        `armed_home` da UI nesses modelos (ver alarm_control_panel.py).
+        """
+        from .const import MODELS_SUPPORTING_STAY
+
+        return self.model_key in MODELS_SUPPORTING_STAY
+
+    @property
     def password(self) -> str:
         """Senha ISECMobile principal, usada para validar códigos digitados na UI."""
         return self._password
