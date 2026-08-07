@@ -1,0 +1,31 @@
+bypass_zone:
+  name: Anular ou reativar zona
+  description: >-
+    Anula (bypass) ou reativa uma zona específica pelo número, preservando
+    as demais anulações já existentes. Usa sempre a senha memorizada da
+    central (não é afetado pelas opções "Exigir senha ao ativar/desativar",
+    que só se aplicam a comandos de ativação/desativação).
+  target:
+    entity:
+      integration: intelbras_alarm
+      domain: alarm_control_panel
+  fields:
+    zone:
+      name: Zona
+      description: Número da zona a anular ou reativar (1 até o nº de zonas do modelo detectado).
+      required: true
+      example: 5
+      selector:
+        number:
+          min: 1
+          max: 64
+          mode: box
+    bypass:
+      name: Anular
+      description: >-
+        Marque para anular (bypass) a zona; desmarque para reativá-la.
+        Padrão: anular.
+      required: false
+      default: true
+      selector:
+        boolean:

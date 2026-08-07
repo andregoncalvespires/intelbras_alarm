@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Conectar à central Intelbras",
+        "description": "Informe o IP e a senha da central. O modelo (AMT 2018/1016/4010) é detectado automaticamente.\n\nPor padrão, o Home Assistant NÃO pede senha para ativar nem para desativar pela interface — a senha informada abaixo é usada automaticamente nos bastidores, como um app já autenticado. Marque as opções abaixo somente se quiser que o próprio Home Assistant peça a senha antes de ativar e/ou desativar (por exemplo, se várias pessoas usam o mesmo Home Assistant e você quer confirmar quem está mexendo no alarme).",
+        "data": {
+          "host": "Endereço IP",
+          "port": "Porta",
+          "password": "Senha (4 a 6 dígitos)",
+          "code_required_arm": "Pedir a senha para ATIVAR (armar) pelo Home Assistant",
+          "code_required_disarm": "Pedir a senha para DESATIVAR (desarmar) pelo Home Assistant"
+        },
+        "data_description": {
+          "code_required_arm": "Desmarcado (padrão): ativa com um toque, sem digitar nada. Marcado: pede a senha antes de ativar.",
+          "code_required_disarm": "Desmarcado (padrão): desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar — recomendado se você quer uma trava extra nessa ação, a mais sensível das duas."
+        }
+      },
+      "partition_passwords": {
+        "title": "Senhas por partição (opcional)",
+        "description": "Se a sua central 4010 tiver senhas diferentes cadastradas por partição, informe aqui. Deixe em branco a(s) que não tiver — nesse caso, a senha principal (informada na tela anterior) é usada automaticamente para aquela partição. Isso não substitui as opções de exigir senha na UI: se marcadas, o valor digitado no Home Assistant continua tendo prioridade.",
+        "data": {
+          "password_a": "Senha da Partição A",
+          "password_b": "Senha da Partição B",
+          "password_c": "Senha da Partição C",
+          "password_d": "Senha da Partição D"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Não foi possível conectar à central. Verifique o IP, a porta e se a senha está correta.",
+      "invalid_password": "A senha deve ter entre 4 e 6 dígitos numéricos.",
+      "unknown": "Erro inesperado."
+    },
+    "abort": {
+      "already_configured": "Esta central já está configurada."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Opções da central Intelbras",
+        "data": {
+          "polling_interval": "Intervalo de consulta de status (segundos)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "alarm_control_panel": {
+      "central": { "name": "Central" },
+      "partition": { "name": "Partição" }
+    },
+    "binary_sensor": {
+      "ac_power": { "name": "Rede elétrica" },
+      "battery_low": { "name": "Bateria fraca" },
+      "battery_missing": { "name": "Bateria ausente ou invertida" },
+      "battery_short": { "name": "Curto-circuito na bateria" },
+      "aux_overload": { "name": "Sobrecarga na saída auxiliar" },
+      "problem": { "name": "Problema na central" },
+      "siren_wire_cut": { "name": "Corte no fio da sirene" },
+      "siren_short_circuit": { "name": "Curto-circuito no fio da sirene" },
+      "phone_line_cut": { "name": "Corte na linha telefônica" },
+      "event_communication_failure": { "name": "Falha ao comunicar evento" },
+      "partitioned": { "name": "Particionamento habilitado" }
+    }
+  }
+}

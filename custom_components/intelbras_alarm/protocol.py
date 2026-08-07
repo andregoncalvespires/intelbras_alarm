@@ -1,0 +1,579 @@
+"""Implementação do protocolo ISECNet / ISECMobile da Intelbras.
+
+Baseado no documento oficial "Descrição de Comandos de Protocolo ISECnet
+Centrais de Alarmes – Intelbras Receptor IP" (AMT2018 E/EG e AMT4010 Smart,
+Revisão 15) e validado com capturas reais de tráfego.
+
+Estrutura do frame (ver seção 6 do documento):
+
+    [Nº Bytes] [0xE9] [0x21] [Senha ASCII 4..6] [Comando 1..2] [Conteúdo 0..52] [0x21] [Checksum]
+               \\_______________________________ ISECMobile _______________________________/
+    \\__________________________ ISECNet ("Conteúdo" do comando 0xE9) __________________________/
+
+``Nº Bytes`` conta os bytes de 0xE9 até o fim do frame ISECMobile (inclusive),
+sem contar a si próprio nem o checksum.
+
+O checksum não está documentado explicitamente no PDF, mas foi confirmado por
+engenharia reversa (bate com 13 dos 14 exemplos do documento; o único que não
+bate tem um erro de digitação conhecido, ver revisão 06 do próprio documento
+que já corrigiu "checksums dos exemplos" antes) e por implementações de
+terceiros de código aberto:
+
+    checksum = NOT(XOR de todos os bytes do frame, do Nº Bytes até o Conteúdo)
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .const import ACK_OK, NACK_MESSAGES
+
+FRAME_DELIMITER = 0x21
+ISEC_COMMAND = 0xE9
+
+
+class ProtocolError(Exception):
+    """Erro genérico de protocolo (frame malformado, checksum inválido etc.)."""
+
+
+class NackError(Exception):
+    """A central respondeu com NACK a um comando."""
+
+    def __init__(self, code: int) -> None:
+        self.code = code
+        self.message = NACK_MESSAGES.get(code, f"NACK desconhecido (0x{code:02X})")
+        super().__init__(self.message)
+
+
+def checksum(data: bytes) -> int:
+    """Calcula o checksum ISECNet: NOT(XOR de todos os bytes)."""
+    x = 0
+    for b in data:
+        x ^= b
+    return (~x) & 0xFF
+
+
+def build_command(password: str, command: int, content: bytes = b"") -> bytes:
+    """Monta um frame ISECNet/ISECMobile completo pronto para envio."""
+    if not (4 <= len(password) <= 6):
+        raise ValueError("A senha deve ter entre 4 e 6 dígitos")
+    isec_mobile = (
+        bytes([FRAME_DELIMITER])
+        + password.encode("ascii")
+        + bytes([command])
+        + content
+        + bytes([FRAME_DELIMITER])
+    )
+    body = bytes([ISEC_COMMAND]) + isec_mobile
+    num_bytes = len(body)
+    if num_bytes > 255:
+        raise ValueError("Conteúdo do comando excede o tamanho máximo do frame")
+    frame = bytes([num_bytes]) + body
+    return frame + bytes([checksum(frame)])
+
+
+@dataclass
+class ParsedFrame:
+    """Resultado da leitura de um frame de resposta da central."""
+
+    command: int
+    content: bytes
+    valid_checksum: bool
+    raw: bytes = field(repr=False)
+
+
+def parse_frame(raw: bytes) -> ParsedFrame:
+    """Interpreta um frame bruto recebido da central (sem framing extra)."""
+    if len(raw) < 3:
+        raise ProtocolError(f"Frame muito curto para ser válido: {raw.hex()}")
+    num_bytes = raw[0]
+    expected_len = 1 + num_bytes + 1  # nº bytes + (comando+conteúdo) + checksum
+    if len(raw) < expected_len:
+        raise ProtocolError(
+            f"Frame incompleto: esperado {expected_len} bytes, recebido {len(raw)}"
+        )
+    raw = raw[:expected_len]
+    command = raw[1]
+    content = raw[2 : 1 + num_bytes]
+    received_checksum = raw[-1]
+    calculated = checksum(raw[:-1])
+    return ParsedFrame(
+        command=command,
+        content=content,
+        valid_checksum=(calculated == received_checksum),
+        raw=raw,
+    )
+
+
+def raise_for_ack(parsed: ParsedFrame) -> None:
+    """Levanta NackError se a resposta curta não for ACK (0xFE)."""
+    if not parsed.content:
+        raise ProtocolError("Resposta vazia, esperava ACK/NACK")
+    code = parsed.content[0]
+    if code != ACK_OK:
+        raise NackError(code)
+
+
+# ---------------------------------------------------------------------------
+# Construtores de comando de alto nível
+# ---------------------------------------------------------------------------
+def cmd_arm(password: str, partition: int | None = None, stay: bool = False) -> bytes:
+    """Monta o comando 0x41 (Ativação).
+
+    O campo <Conteúdo> documentado (seção 7.1) só detalha explicitamente o
+    caso "sem partição": NULL/0x41/0x42/0x43/0x44 para escolher a
+    partição, OU 0x50 sozinho para ativar em modo Stay a central inteira.
+    A doc não cobre o caso "Stay de uma partição específica" — mas o fluxo
+    Node-RED original usado antes desta integração (comportamento validado
+    em campo) monta, nesse caso, um conteúdo de **2 bytes**: a partição
+    seguida do marcador Stay (ex.: partição A em Stay = ``[0x41, 0x50]``
+    como conteúdo, além do byte de comando 0x41). Reproduzido aqui.
+    """
+    from .const import CMD_ARM, PARTITION_STAY
+
+    content = b""
+    if partition is not None:
+        content += bytes([partition])
+    if stay:
+        content += bytes([PARTITION_STAY])
+    return build_command(password, CMD_ARM, content)
+
+
+def cmd_disarm(password: str, partition: int | None = None) -> bytes:
+    from .const import CMD_DISARM
+
+    content = bytes([partition]) if partition is not None else b""
+    return build_command(password, CMD_DISARM, content)
+
+
+def cmd_pgm(password: str, address: int, turn_on: bool) -> bytes:
+    from .const import CMD_PGM, PGM_OFF, PGM_ON
+
+    sub = PGM_ON if turn_on else PGM_OFF
+    return build_command(password, CMD_PGM, bytes([sub, address]))
+
+
+def cmd_siren(password: str, turn_on: bool) -> bytes:
+    from .const import CMD_SIREN_OFF, CMD_SIREN_ON
+
+    return build_command(password, CMD_SIREN_ON if turn_on else CMD_SIREN_OFF)
+
+
+def cmd_panic(password: str, kind: int) -> bytes:
+    from .const import CMD_PANIC
+
+    return build_command(password, CMD_PANIC, bytes([kind]))
+
+
+def cmd_bypass(password: str, bypassed_zones: dict[int, bool]) -> bytes:
+    """Monta o comando 0x42 (Bypass/Anulação de Zonas, seção 7.7).
+
+    É um comando **absoluto**: o conteúdo de 8 bytes representa o estado
+    final desejado de anulação de todas as 64 zonas do protocolo (bit 1 =
+    anulada, bit 0 = ativada). Zonas omitidas de ``bypassed_zones`` (ou com
+    valor ``False``) ficam ativadas — por isso, para anular zonas
+    preservando anulações já existentes, o chamador deve incluir o estado
+    atual de todas as zonas já anuladas (ver
+    ``IntelbrasAlarmCoordinator.async_bypass_zones``).
+    """
+    from .const import CMD_BYPASS
+
+    content = bytearray(8)
+    for zone, bypassed in bypassed_zones.items():
+        if not bypassed or not (1 <= zone <= 64):
+            continue
+        byte_idx = (zone - 1) // 8
+        bit_idx = (zone - 1) % 8
+        content[byte_idx] |= 1 << bit_idx
+    return build_command(password, CMD_BYPASS, bytes(content))
+
+
+def cmd_status(password: str, family: str) -> bytes:
+    from .const import FAMILY_STATUS_CMD
+
+    return build_command(password, FAMILY_STATUS_CMD[family])
+
+
+def cmd_eeprom_read(password: str, address: int, length: int) -> bytes:
+    from .const import CMD_EEPROM_READ
+
+    return build_command(
+        password,
+        CMD_EEPROM_READ,
+        bytes([(address >> 8) & 0xFF, address & 0xFF, length & 0xFF]),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parsing dos frames de status (comandos 0x5A e 0x5B)
+#
+# As funções abaixo seguem a numeração <StatusNN> do documento oficial
+# (seções 7.4 e 7.5). ``content`` é o array de status já sem Nº Bytes,
+# Comando e Checksum (ou seja, content[0] == Status01).
+# ---------------------------------------------------------------------------
+def _bits_to_zone_map(
+    content: bytes,
+    first_status_index: int,
+    n_bytes: int,
+    max_zone: int,
+    zone_start: int = 1,
+) -> dict[int, bool]:
+    """Converte ``n_bytes`` bytes de bitmap (8 zonas cada) em {zona: bool}.
+
+    ``zone_start`` permite deslocar a numeração quando o bloco de status não
+    começa na zona 1 (ex.: bateria baixa de sensores sem fio na família 4010,
+    que só é reportada a partir da zona 17).
+    """
+    result: dict[int, bool] = {}
+    for byte_offset in range(n_bytes):
+        status_idx = first_status_index + byte_offset  # 1-based
+        if status_idx - 1 >= len(content):
+            break
+        value = content[status_idx - 1]
+        for bit in range(8):
+            zone = zone_start + byte_offset * 8 + bit
+            if zone > max_zone:
+                continue
+            result[zone] = bool((value >> bit) & 1)
+    return result
+
+
+def _bcd_to_int(value: int) -> int:
+    return (value >> 4) * 10 + (value & 0x0F)
+
+
+@dataclass
+class PanelStatus:
+    """Representação normalizada do status da central, família-agnóstica."""
+
+    model_key: str
+    model_name: str
+    family: str
+    firmware: str
+    zones_open: dict[int, bool]
+    zones_violated: dict[int, bool]
+    zones_bypassed: dict[int, bool]
+    zones_low_battery: dict[int, bool]
+    partition_mode_enabled: bool
+    partitions_armed: dict[str, bool]
+    activated: bool
+    zone_triggered: bool
+    trigger_bit_latched: bool  # bit 6 bruto do Status23/30, ANTES de combinar com a sirene (ver zone_triggered)
+    zone_open_flag: bool  # bit 2 do Status23/30: "alguma zona aberta" (flag agregada, não por zona)
+    status_byte_raw: int  # valor cru do Status23 (2018/1016) ou Status30 (4010), p/ diagnóstico
+    status_byte_name: str  # "status23" ou "status30" — para rotular o atributo acima dinamicamente
+    partition_status_bytes: dict[str, int]  # nome->valor bruto: {"status22": 0x..} ou {"status28": 0x.., "status29": 0x..}
+    partition_bit_map: dict[str, tuple[str, int]]  # partição -> (nome do byte, índice do bit) usado por ela
+    siren_on: bool
+    problem: bool
+    ac_power_ok: bool
+    battery_low: bool
+    battery_missing_or_reversed: bool
+    battery_short: bool
+    aux_overload: bool
+    battery_level: int
+    pgm_state: dict[int, bool]
+    panel_datetime_synced: bool
+    siren_wire_cut: bool
+    siren_short_circuit: bool
+    phone_line_cut: bool
+    event_communication_failure: bool
+
+
+def parse_status_2018(content: bytes) -> PanelStatus:
+    """Parseia a resposta do comando 0x5A (43 bytes) — família 2018/1016."""
+    from .const import MODEL_TABLE, MODEL_UNKNOWN
+
+    zones_open = _bits_to_zone_map(content, 1, 6, 48)
+    zones_violated = _bits_to_zone_map(content, 7, 6, 48)
+    zones_bypassed = _bits_to_zone_map(content, 13, 6, 48)
+    zones_low_battery = _bits_to_zone_map(content, 39, 5, 40)
+
+    model_byte = content[18] if len(content) > 18 else None
+    model_key, model_name, family, _, _ = MODEL_TABLE.get(
+        model_byte, (MODEL_UNKNOWN, "Desconhecido", "2018", 48, 2)
+    )
+    fw_byte = content[19] if len(content) > 19 else 0
+    firmware = f"{(fw_byte >> 4) & 0x0F}.{fw_byte & 0x0F}"
+
+    status21 = content[20] if len(content) > 20 else 0
+    status22 = content[21] if len(content) > 21 else 0
+    status23 = content[22] if len(content) > 22 else 0
+    status29 = content[28] if len(content) > 28 else 0
+    status33 = content[32] if len(content) > 32 else 0
+    status38 = content[37] if len(content) > 37 else 0
+
+    partition_mode_enabled = bool(status21 & 0x01)
+    partitions_armed = {
+        "A": bool(status22 & 0x01),
+        "B": bool((status22 >> 1) & 0x01),
+    }
+    partition_status_bytes = {"status22": status22}
+    partition_bit_map: dict[str, tuple[str, int]] = {
+        "A": ("status22", 0),
+        "B": ("status22", 1),
+    }
+    # Status23 (2018/1016) / Status30 (4010): regra confirmada pelo usuário
+    # a partir de captura de bytes reais (não mais leitura literal da
+    # tabela de valores enumerados da doc, seção 7.4 — na prática é uma
+    # máscara de bits de verdade):
+    #   bit 0        -> parte de "problema na central" (junto com bit 5)
+    #   bit 2        -> alguma zona aberta
+    #   bit 3        -> central ativada
+    #   bit 5        -> parte de "problema na central" (junto com bit 0)
+    #   bit 6        -> "disparo" — mas ver ressalva abaixo, é um bit
+    #                   LATCHED (fica em 1 até a MESMA partição ser
+    #                   reativada), não um indicador de disparo ao vivo.
+    # "Ativada" da CENTRAL usa o bit 3 deste byte (bits 0 do Status22/28 e
+    # 1 do Status22/28, ou 0/1 do Status29, continuam sendo a fonte de
+    # "ativada" de cada PARTIÇÃO individualmente — ver partitions_armed).
+    activated = bool((status23 >> 3) & 0x01)
+    zone_open_flag = bool((status23 >> 2) & 0x01)
+    problem = bool(status23 & 0x01) and bool((status23 >> 5) & 0x01)
+    # Sirene: bit 2 do Status38 (NÃO bit 1 do Status23 — essa era a leitura
+    # anterior, incorreta; corrigida a partir da documentação oficial,
+    # seção 7.5/página 11: "<Status38>: Bit 2: Status sirene").
+    siren_on = bool((status38 >> 2) & 0x01)
+    # "Disparo real": o bit 6 do Status23 é uma memória (latched) que só
+    # zera quando a MESMA partição que disparou é reativada — se outra
+    # partição for ativada nesse meio-tempo, o bit 6 continua em 1 e
+    # geraria um falso "triggered" nela. Capturado e confirmado pelo
+    # usuário em campo (ver histórico deste arquivo). A sirene realmente
+    # tocando (Status38 bit 2) é o sinal de que o disparo ainda está
+    # ativo — combinado aqui para que "zone_triggered" só valha para um
+    # disparo genuíno em andamento, não uma memória antiga.
+    zone_triggered = bool((status23 >> 6) & 0x01) and siren_on
+    trigger_bit_latched = bool((status23 >> 6) & 0x01)
+
+    # Nível de bateria: fiel à lógica do fluxo Node-RED original — o gate
+    # correto é "bateria ausente ou invertida" (Status29 bit2), não
+    # "bateria em curto" (bit3) sozinho. A versão anterior só checava o
+    # bit3, então uma bateria ausente (bit2) continuava sendo lida como se
+    # tivesse carga. Qualquer um dos dois problemas força 0%, já que os
+    # dois tornam a leitura do nível pouco confiável.
+    battery_missing_or_reversed = bool((status29 >> 2) & 0x01)
+    battery_short = bool((status29 >> 3) & 0x01)
+    battery_level = 0
+    if not battery_missing_or_reversed and not battery_short and len(content) > 30:
+        battery_level = {0x0F: 100, 0x07: 75, 0x03: 50, 0x01: 25, 0x00: 0}.get(
+            content[30] & 0x0F, 0
+        )
+
+    pgm_state = {
+        1: bool((status38 >> 6) & 0x01),
+        2: bool((status38 >> 5) & 0x01),
+    }
+
+    return PanelStatus(
+        model_key=model_key,
+        model_name=model_name,
+        family=family,
+        firmware=firmware,
+        zones_open=zones_open,
+        zones_violated=zones_violated,
+        zones_bypassed=zones_bypassed,
+        zones_low_battery=zones_low_battery,
+        partition_mode_enabled=partition_mode_enabled,
+        partitions_armed=partitions_armed,
+        activated=activated,
+        zone_triggered=zone_triggered,
+        trigger_bit_latched=trigger_bit_latched,
+        zone_open_flag=zone_open_flag,
+        status_byte_raw=status23,
+        status_byte_name="status23",
+        partition_status_bytes=partition_status_bytes,
+        partition_bit_map=partition_bit_map,
+        siren_on=siren_on,
+        problem=problem,
+        ac_power_ok=not bool(status29 & 0x01),
+        battery_low=bool((status29 >> 1) & 0x01),
+        battery_missing_or_reversed=battery_missing_or_reversed,
+        battery_short=battery_short,
+        aux_overload=bool((status29 >> 4) & 0x01),
+        battery_level=battery_level,
+        pgm_state=pgm_state,
+        panel_datetime_synced=_datetime_synced(content, hh=23, mm=24, dd=25, mo=26, yy=27),
+        siren_wire_cut=bool(status33 & 0x01),
+        siren_short_circuit=bool((status33 >> 1) & 0x01),
+        phone_line_cut=bool((status33 >> 2) & 0x01),
+        event_communication_failure=bool((status33 >> 3) & 0x01),
+    )
+
+
+def parse_status_4010(content: bytes) -> PanelStatus:
+    """Parseia a resposta do comando 0x5B (até 54 bytes) — família 4010."""
+    from .const import MODEL_TABLE, MODEL_UNKNOWN
+
+    zones_open = _bits_to_zone_map(content, 1, 8, 64)
+    zones_violated = _bits_to_zone_map(content, 9, 8, 64)
+    zones_bypassed = _bits_to_zone_map(content, 17, 8, 64)
+    zones_low_battery = _bits_to_zone_map(content, 47, 6, 64, zone_start=17)
+
+    model_byte = content[24] if len(content) > 24 else None
+    model_key, model_name, family, _, _ = MODEL_TABLE.get(
+        model_byte, (MODEL_UNKNOWN, "Desconhecido", "4010", 64, 4)
+    )
+    fw_byte = content[25] if len(content) > 25 else 0
+    firmware = f"{(fw_byte >> 4) & 0x0F}.{fw_byte & 0x0F}"
+
+    status27 = content[26] if len(content) > 26 else 0
+    status28 = content[27] if len(content) > 27 else 0
+    status29 = content[28] if len(content) > 28 else 0
+    status30 = content[29] if len(content) > 29 else 0
+    status36 = content[35] if len(content) > 35 else 0
+    status43 = content[42] if len(content) > 42 else 0
+    status46 = content[45] if len(content) > 45 else 0
+    status53 = content[52] if len(content) > 52 else 0
+    status54 = content[53] if len(content) > 53 else 0
+
+    partition_mode_enabled = bool(status27 & 0x01)
+    partitions_armed = {
+        "A": bool(status28 & 0x01),
+        "B": bool((status28 >> 1) & 0x01),
+        "C": bool(status29 & 0x01),
+        "D": bool((status29 >> 1) & 0x01),
+    }
+    partition_status_bytes = {"status28": status28, "status29": status29}
+    partition_bit_map: dict[str, tuple[str, int]] = {
+        "A": ("status28", 0),
+        "B": ("status28", 1),
+        "C": ("status29", 0),
+        "D": ("status29", 1),
+    }
+    # "Ativada" da CENTRAL usa o bit 3 do Status30 — mesma regra confirmada
+    # com o usuário, ver o comentário detalhado em parse_status_2018.
+    # Cada PARTIÇÃO continua usando seu próprio bit em Status28/29
+    # (partitions_armed).
+    activated = bool((status30 >> 3) & 0x01)
+    zone_open_flag = bool((status30 >> 2) & 0x01)
+    problem = bool(status30 & 0x01) and bool((status30 >> 5) & 0x01)
+    # Sirene: bit 2 do Status46 (NÃO bit 1 do Status30 — corrigido, mesmo
+    # raciocínio do parse_status_2018).
+    siren_on = bool((status46 >> 2) & 0x01)
+    # "Disparo real": mesmo raciocínio do parse_status_2018 — o bit 6 do
+    # Status30 fica latched até a mesma partição ser reativada; combinado
+    # com a sirene realmente tocando para não confundir memória antiga com
+    # disparo em andamento.
+    zone_triggered = bool((status30 >> 6) & 0x01) and siren_on
+    trigger_bit_latched = bool((status30 >> 6) & 0x01)
+
+    # Nível de bateria: mesmo raciocínio do parse_status_2018 — gate por
+    # "ausente/invertida" (bit2) OU "curto" (bit3), não só curto.
+    battery_missing_or_reversed = bool((status36 >> 2) & 0x01)
+    battery_short = bool((status36 >> 3) & 0x01)
+    battery_level = 0
+    if not battery_missing_or_reversed and not battery_short and len(content) > 40:
+        battery_level = {0x0F: 100, 0x07: 75, 0x03: 50, 0x01: 25, 0x00: 0}.get(
+            content[40] & 0x0F, 0
+        )
+
+    pgm_state = {
+        1: bool((status46 >> 6) & 0x01),
+        2: bool((status46 >> 5) & 0x01),
+        3: bool((status46 >> 4) & 0x01),
+    }
+    for bit in range(8):
+        pgm_state[4 + bit] = bool((status53 >> bit) & 0x01)
+    for bit in range(8):
+        pgm_state[12 + bit] = bool((status54 >> bit) & 0x01)
+
+    return PanelStatus(
+        model_key=model_key,
+        model_name=model_name,
+        family=family,
+        firmware=firmware,
+        zones_open=zones_open,
+        zones_violated=zones_violated,
+        zones_bypassed=zones_bypassed,
+        zones_low_battery=zones_low_battery,
+        partition_mode_enabled=partition_mode_enabled,
+        partitions_armed=partitions_armed,
+        activated=activated,
+        zone_triggered=zone_triggered,
+        trigger_bit_latched=trigger_bit_latched,
+        zone_open_flag=zone_open_flag,
+        status_byte_raw=status30,
+        status_byte_name="status30",
+        partition_status_bytes=partition_status_bytes,
+        partition_bit_map=partition_bit_map,
+        siren_on=siren_on,
+        problem=problem,
+        ac_power_ok=not bool(status36 & 0x01),
+        battery_low=bool((status36 >> 1) & 0x01),
+        battery_missing_or_reversed=battery_missing_or_reversed,
+        battery_short=battery_short,
+        aux_overload=bool((status36 >> 4) & 0x01),
+        battery_level=battery_level,
+        pgm_state=pgm_state,
+        panel_datetime_synced=_datetime_synced(content, hh=30, mm=31, dd=32, mo=33, yy=34),
+        siren_wire_cut=bool(status43 & 0x01),
+        siren_short_circuit=bool((status43 >> 1) & 0x01),
+        phone_line_cut=bool((status43 >> 2) & 0x01),
+        event_communication_failure=bool((status43 >> 3) & 0x01),
+    )
+
+
+def _datetime_synced(content: bytes, *, hh: int, mm: int, dd: int, mo: int, yy: int) -> bool:
+    """Confere se o relógio da central está a menos de 10 min do relógio local."""
+    import datetime
+
+    try:
+        idx = [hh, mm, dd, mo, yy]
+        if max(idx) >= len(content):
+            return False
+        panel_dt = datetime.datetime(
+            2000 + content[yy],
+            max(1, min(12, content[mo])),
+            max(1, min(28, content[dd])),
+            min(23, content[hh]),
+            min(59, content[mm]),
+            tzinfo=datetime.timezone.utc,
+        )
+    except (ValueError, IndexError):
+        return False
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return abs((now - panel_dt).total_seconds()) < 600
+
+
+def parse_status(content: bytes, family: str) -> PanelStatus:
+    from .const import FAMILY_2018
+
+    if family == FAMILY_2018:
+        return parse_status_2018(content)
+    return parse_status_4010(content)
+
+
+# ---------------------------------------------------------------------------
+# Nomes de zona (EEPROM, família 4010) — mapa confirmado por captura real
+# ---------------------------------------------------------------------------
+def decode_zone_names(eeprom_data: bytes, zone_offset: int) -> dict[int, str]:
+    """Decodifica registros de 16 bytes ASCII terminados em NUL.
+
+    ``eeprom_data`` já deve estar sem o byte <Dado01> (índice do usuário).
+    ``zone_offset`` é o número da primeira zona contida neste bloco (1-based).
+    """
+    from .const import ZONE_NAME_RECORD_LEN
+
+    names: dict[int, str] = {}
+    for i in range(0, len(eeprom_data), ZONE_NAME_RECORD_LEN):
+        record = eeprom_data[i : i + ZONE_NAME_RECORD_LEN]
+        if len(record) < ZONE_NAME_RECORD_LEN:
+            break
+        raw = record.split(b"\x00", 1)[0]
+        try:
+            name = raw.decode("ascii", errors="ignore").strip()
+        except UnicodeDecodeError:
+            name = ""
+        zone = zone_offset + (i // ZONE_NAME_RECORD_LEN)
+        names[zone] = name if (name and not _is_uninitialized_pattern(raw)) else f"Zona {zone:02d}"
+    return names
+
+
+def _is_uninitialized_pattern(raw: bytes) -> bool:
+    """Detecta o padrão de fábrica (EEPROM nunca programada pelo instalador).
+
+    Zonas sem nome configurado retornam bytes ASCII sequenciais (ex.:
+    ``ABCDEFGHIJKLMN``), confirmado em captura real — não é um nome válido.
+    """
+    if len(raw) < 2:
+        return False
+    return all(raw[i] + 1 == raw[i + 1] for i in range(len(raw) - 1))

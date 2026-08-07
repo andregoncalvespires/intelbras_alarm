@@ -1,0 +1,68 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to the Intelbras panel",
+        "description": "Enter the panel's IP and password. The model (AMT 2018/1016/4010) is detected automatically.\n\nBy default, Home Assistant does NOT ask for a code to arm or disarm from the UI — the password below is used automatically behind the scenes, like an already logged-in app. Only check the options below if you want Home Assistant itself to prompt for the password before arming and/or disarming (e.g. if several people share the same Home Assistant and you want to confirm who's touching the alarm).",
+        "data": {
+          "host": "IP address",
+          "port": "Port",
+          "password": "Password (4 to 6 digits)",
+          "code_required_arm": "Ask for the password to ARM via Home Assistant",
+          "code_required_disarm": "Ask for the password to DISARM via Home Assistant"
+        },
+        "data_description": {
+          "code_required_arm": "Unchecked (default): arms with a single tap, no typing. Checked: asks for the password before arming.",
+          "code_required_disarm": "Unchecked (default): disarms with a single tap, no typing. Checked: asks for the password before disarming — recommended if you want an extra lock on this action, the more sensitive of the two."
+        }
+      },
+      "partition_passwords": {
+        "title": "Per-partition passwords (optional)",
+        "description": "If your 4010 panel has different passwords registered per partition, enter them here. Leave any blank — that partition falls back to the main password from the previous screen. This doesn't replace the 'require code' options: if checked, the value typed in Home Assistant still takes priority.",
+        "data": {
+          "password_a": "Partition A password",
+          "password_b": "Partition B password",
+          "password_c": "Partition C password",
+          "password_d": "Partition D password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not connect to the panel. Check the IP, port and password.",
+      "invalid_password": "Password must be 4 to 6 numeric digits.",
+      "unknown": "Unexpected error."
+    },
+    "abort": {
+      "already_configured": "This panel is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Intelbras panel options",
+        "data": {
+          "polling_interval": "Status polling interval (seconds)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "alarm_control_panel": {
+      "central": { "name": "Central" },
+      "partition": { "name": "Partition" }
+    },
+    "binary_sensor": {
+      "ac_power": { "name": "AC power" },
+      "battery_low": { "name": "Low battery" },
+      "battery_missing": { "name": "Battery missing or reversed" },
+      "battery_short": { "name": "Battery short circuit" },
+      "aux_overload": { "name": "Auxiliary output overload" },
+      "problem": { "name": "Panel problem" },
+      "siren_wire_cut": { "name": "Siren wire cut" },
+      "siren_short_circuit": { "name": "Siren wire short circuit" },
+      "phone_line_cut": { "name": "Phone line cut" },
+      "event_communication_failure": { "name": "Event communication failure" },
+      "partitioned": { "name": "Partitioning enabled" }
+    }
+  }
+}
