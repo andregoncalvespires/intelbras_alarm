@@ -66,9 +66,10 @@ configuração inicial) — para isso, remova e reconfigure.
   habilite manualmente os que existem na sua instalação) e (só na 4010)
   expansores de PGM/zona.
 - **Bateria e contadores** (`sensor`): nível de bateria (%), contagem de
-  zonas abertas/violadas/anuladas (com a lista de quais zonas, nos
-  atributos), e **"Último comando"** (rastreia a última ação enviada e a
-  resposta da central, separado da consulta de status normal).
+  zonas abertas/violadas/anuladas/com bateria baixa (sensores sem fio, com
+  a lista de quais zonas nos atributos), e **"Último comando"** (rastreia
+  a última ação enviada e a resposta da central, separado da consulta de
+  status normal).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —

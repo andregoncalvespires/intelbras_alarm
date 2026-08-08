@@ -39,6 +39,13 @@ async def async_setup_entry(
                 name="Zonas anuladas",
                 icon="mdi:door-closed-lock",
             ),
+            IntelbrasZoneCountSensor(
+                coordinator,
+                entry,
+                key="low_battery",
+                name="Zonas com bateria baixa",
+                icon="mdi:battery-alert-variant-outline",
+            ),
             IntelbrasLastCommandResultSensor(coordinator, entry),
         ]
     )
@@ -73,6 +80,7 @@ _ZONE_COUNT_FIELDS = {
     "open": "zones_open",
     "violated": "zones_violated",
     "bypassed": "zones_bypassed",
+    "low_battery": "zones_low_battery",
 }
 
 
