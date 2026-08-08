@@ -301,6 +301,9 @@ class IntelbrasPgmExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCo
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Desabilitado por padrão: nem toda 4010 tem expansoras de PGM
+    # instaladas — o usuário habilita manualmente as que existem de fato.
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, expander: int) -> None:
         super().__init__(coordinator)
@@ -323,6 +326,9 @@ class IntelbrasZoneExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmC
     _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Mesmo raciocínio do expansor de PGM: nem toda instalação tem
+    # expansoras de zona.
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, expander: int) -> None:
         super().__init__(coordinator)

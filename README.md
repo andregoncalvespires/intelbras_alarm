@@ -9,6 +9,8 @@ central, sem depender de Node-RED.
 > decisões de design, histórico de correções): [README_DETALHADO.md](README_DETALHADO.md).
 > Este README é o resumo prático para instalar e usar.
 
+![Tela do dispositivo no Home Assistant, mostrando central, partições, PGMs e sirene](docs/images/tela-dispositivo.png)
+
 ---
 
 ## Instalação
@@ -97,12 +99,46 @@ Sempre usa a senha configurada da central (não depende das opções de
 - Quer confirmar o que a integração está fazendo? O sensor **"Último
   comando"** mostra a ação enviada e a resposta da central em atributos
   separados da consulta de status normal (que atualiza rápido demais para
-  acompanhar).
+  acompanhar):
+
+  ![Atributos da entidade "Último comando", mostrando o comando enviado e a resposta da central](docs/images/ultimo-comando-detalhe.png)
+
 - Se algo parecer errado, olhe os atributos de `alarm_control_panel` e do
   binary_sensor "Central disparada" — mostram os bytes brutos recebidos
   da central, sem precisar mexer em log.
 - Precisa de mais detalhe (log de depuração, explicação de cada bit do
   protocolo)? Veja o [README_DETALHADO.md](README_DETALHADO.md).
+
+## Demonstração
+
+<table>
+<tr>
+<td align="center" width="33%">
+
+**Ativar/desativar sem exigir senha**
+<br>(padrão — um toque, sem digitar nada)
+
+![Ativando e desativando sem senha](docs/images/armar-desarmar-sem-senha.gif)
+
+</td>
+<td align="center" width="33%">
+
+**Ativar/desativar exigindo senha**
+<br>(opção marcada na configuração)
+
+![Ativando e desativando com senha](docs/images/armar-desarmar-com-senha.gif)
+
+</td>
+<td align="center" width="33%">
+
+**Disparo**
+<br>(estado `triggered` refletido em tempo real)
+
+![Central disparando](docs/images/disparo.gif)
+
+</td>
+</tr>
+</table>
 
 ## Créditos
 
