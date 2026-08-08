@@ -109,10 +109,10 @@ def _device_info(entry: ConfigEntry, coordinator: IntelbrasAlarmCoordinator) -> 
 class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControlPanelEntity):
     """Comportamento comum: mapeamento de status -> estado do alarm_control_panel."""
 
-    # Sem has_entity_name: o nome de cada entidade não é prefixado pelo
-    # nome do dispositivo (a pedido do usuário) — cada subclasse define seu
-    # próprio _attr_name completo e autônomo.
-    _attr_has_entity_name = False
+    # Nome de cada entidade prefixado pelo nome do dispositivo (padrão do
+    # Home Assistant) — revertida uma tentativa anterior de remover esse
+    # prefixo, a pedido do usuário.
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -232,7 +232,7 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_central"
-        self._attr_name = "Central"
+        self._attr_name = None  # usa só o nome do dispositivo
         # Modo Stay (armed_home) só é oferecido em modelos confirmados como
         # suportando de verdade o comando 0x50 — ver coordinator.supports_stay.
         self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY

@@ -203,7 +203,7 @@ integração expõe:
 | `<Zonas violadas>` | zona que gerou evento de alarme | atributo `violada` do `binary_sensor` da zona | — |
 | `<Zonas anuladas>` | bypass | atributo `anulada_bypass` | — |
 | "Bateria baixa em sensor sem fio na zona N" | bateria do sensor sem fio | atributo `bateria_baixa` | — |
-| Status29/36 bit0 "Falta de rede elétrica" | energia CA | `binary_sensor` | `plug` (bit=1 na doc significa **falta** de energia; a integração inverte a leitura na origem — em `protocol.py` — para que `ac_power_ok`/o sensor fiquem "ligado" quando **há** energia, coerente com o significado de `device_class: plug`) |
+| Status29/36 bit0 "Falta de rede elétrica" | energia CA | `binary_sensor` | `problem` (sem inversão — bit=1 na central significa falta de energia, e o sensor fica "ligado" nesse caso, coerente com `device_class: problem`, onde ligado = problema) |
 | Status29/36 bit1 "Bateria baixa" | bateria interna fraca | `binary_sensor` | `battery` |
 | Status29/36 bit2 "Bateria ausente ou invertida" | falha de bateria | `binary_sensor` | `problem` |
 | Status29/36 bit3 "Bateria em curto-circuito" | falha de bateria | `binary_sensor` | `problem` |
@@ -256,7 +256,7 @@ de verdade** no Status23/30:
 
 | Bit | Significado |
 |---|---|
-| bit 0 + bit 5 | "Problema na central" (os dois precisam estar em 1) |
+| bit 0 + bit 4 | "Problema na central" (os dois precisam estar em 1 — confirmado com bytes reais capturados pelo usuário; `0x11` = bit0+bit4, batendo com o exemplo da doc) |
 | bit 2 | "Alguma zona aberta" (flag agregada) |
 | bit 3 | "Central ativada" |
 | bit 6 | Disparo — **mas é um bit *latched*, ver ressalva abaixo** |
@@ -606,11 +606,29 @@ não estão batendo com o comportamento real da central.
 
 ## Nomenclatura das entidades
 
-O nome de cada entidade (ex.: "Sirene", "Zona 05") **não é prefixado pelo
-nome do dispositivo** — diferente do padrão mais comum do Home Assistant.
-Todas ainda ficam agrupadas sob o mesmo dispositivo "Intelbras \<modelo\>
-(\<IP\>)" na página de Dispositivos, só o texto do nome da entidade em si
-é mais curto.
+O nome de cada entidade é **prefixado pelo nome do dispositivo** (ex.:
+"Intelbras AMT 4010 SMART (IP) Sirene") — o padrão do Home Assistant. Uma
+versão anterior chegou a remover esse prefixo a pedido do usuário, depois
+revertida — mantido o comportamento padrão.
+
+## Data/Hora da central: não é BCD, é o valor cru do byte
+
+Diferente do que a documentação oficial afirma (seção 7.4/7.5: "cada
+nibble representa um dígito", com o exemplo "0x12 representa 12 horas",
+sugerindo BCD), bytes reais capturados pelo usuário provam que os campos
+de hora/minuto/dia/mês/ano da central são o **valor cru do byte em
+decimal**, sem separação de nibbles. Duas evidências definitivas:
+
+- Um byte de minuto `0x2E` só faz sentido como valor cru (`0x2E` = 46
+  decimal, o minuto real na captura) — como BCD teria um nibble baixo
+  `E`, que não é um dígito decimal válido (0-9), então nem deveria ser
+  possível decodificar.
+- Um byte de ano `0x1A` bate com `26` (2026, o ano real) como valor cru;
+  via BCD daria `20` (2020), errado.
+
+Isso também bate com o fluxo Node-RED original (`padZero(msg.payload[N])`
+direto no byte, sem nenhuma conversão BCD). `_format_panel_datetime()` usa
+o valor cru do byte diretamente.
 
 ## Créditos
 

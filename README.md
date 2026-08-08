@@ -56,8 +56,9 @@ oficial).
 - **Diagnóstico da central** (`binary_sensor`): rede elétrica, bateria
   (fraca/ausente/curto), sobrecarga, sirene (fio cortado/curto), linha
   telefônica, falha de comunicação, particionamento, disparo, zona aberta
-  agregada, problema em teclados/receptores e (só na 4010) expansores de
-  PGM/zona.
+  agregada, problema em teclados/receptores (desabilitados por padrão —
+  habilite manualmente os que existem na sua instalação) e (só na 4010)
+  expansores de PGM/zona.
 - **Bateria e contadores** (`sensor`): nível de bateria (%), contagem de
   zonas abertas/violadas/anuladas (com a lista de quais zonas, nos
   atributos), e **"Último comando"** (rastreia a última ação enviada e a

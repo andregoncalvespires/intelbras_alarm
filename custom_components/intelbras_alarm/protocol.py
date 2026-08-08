@@ -237,30 +237,35 @@ def _bits_to_zone_map(
     return result
 
 
-def _bcd_to_int(value: int) -> int:
-    return (value >> 4) * 10 + (value & 0x0F)
-
-
 def _format_panel_datetime(
     content: bytes, *, hh: int, mm: int, dd: int, mo: int, yy: int
 ) -> str | None:
-    """Converte os 5 bytes BCD de data/hora em ``"dd/mm/aaaa hh:mm"``.
+    """Converte os 5 bytes de data/hora em ``"dd/mm/aaaa hh:mm"``.
 
-    Cada byte tem um dígito decimal em cada nibble (ex.: 0x12 representa o
-    número 12, não 18) — por isso passa por ``_bcd_to_int``, que antes desta
-    correção existia no código mas nunca era chamada (a conversão anterior
-    usava o byte cru diretamente, então uma central às 12h media
-    incorretamente "18h" internamente).
+    IMPORTANTE — histórico desta função: a documentação oficial (seção
+    7.4/7.5, ex.: "0x12 representa 12 horas") sugere que cada byte é BCD
+    (um dígito decimal por nibble). Uma versão anterior desta integração
+    implementou exatamente isso via ``_bcd_to_int``. Bytes reais capturados
+    pelo usuário provaram que essa leitura está ERRADA: o byte de minuto
+    ``0x2E`` decodificado como BCD dá 34 (`(2×10)+14`, um cálculo que só
+    "funciona" porque nunca se valida se o nibble baixo é um dígito
+    decimal de verdade — 0xE=14 não é), mas o minuto real no momento da
+    captura era 46 — exatamente o valor **bruto** do byte (``0x2E`` = 46
+    em decimal). O mesmo padrão se repetiu com um byte de hora
+    (``0x16`` bruto = 22, batendo com a hora real; BCD teria dado 16,
+    errado). Também bate exatamente com o fluxo Node-RED original, que
+    nunca fez nenhuma conversão BCD para estes campos (só
+    ``padZero(byte)`` direto). Corrigido para usar o valor bruto do byte.
     """
     try:
         idx = [hh, mm, dd, mo, yy]
         if max(idx) >= len(content):
             return None
-        hour = _bcd_to_int(content[hh])
-        minute = _bcd_to_int(content[mm])
-        day = _bcd_to_int(content[dd])
-        month = _bcd_to_int(content[mo])
-        year = 2000 + _bcd_to_int(content[yy])
+        hour = content[hh]
+        minute = content[mm]
+        day = content[dd]
+        month = content[mo]
+        year = 2000 + content[yy]
         if not (0 <= hour <= 23 and 0 <= minute <= 59 and 1 <= day <= 31 and 1 <= month <= 12):
             return None
         return f"{day:02d}/{month:02d}/{year:04d} {hour:02d}:{minute:02d}"
@@ -301,7 +306,7 @@ class PanelStatus:
     partition_bit_map: dict[str, tuple[str, int]]  # partição -> (nome do byte, índice do bit) usado por ela
     siren_on: bool
     problem: bool
-    ac_power_ok: bool
+    ac_power_fault: bool  # bit0 do Status29/36 cru — 1 = falta de rede elétrica (problema)
     battery_low: bool
     battery_missing_or_reversed: bool
     battery_short: bool
@@ -377,7 +382,7 @@ def parse_status_2018(content: bytes) -> PanelStatus:
     # "ativada" de cada PARTIÇÃO individualmente — ver partitions_armed).
     activated = bool((status23 >> 3) & 0x01)
     zone_open_flag = bool((status23 >> 2) & 0x01)
-    problem = bool(status23 & 0x01) and bool((status23 >> 5) & 0x01)
+    problem = bool(status23 & 0x01) and bool((status23 >> 4) & 0x01)
     # Sirene: bit 2 do Status38 (NÃO bit 1 do Status23 — essa era a leitura
     # anterior, incorreta; corrigida a partir da documentação oficial,
     # seção 7.5/página 11: "<Status38>: Bit 2: Status sirene").
@@ -446,7 +451,7 @@ def parse_status_2018(content: bytes) -> PanelStatus:
         partition_bit_map=partition_bit_map,
         siren_on=siren_on,
         problem=problem,
-        ac_power_ok=not bool(status29 & 0x01),
+        ac_power_fault=bool(status29 & 0x01),
         battery_low=bool((status29 >> 1) & 0x01),
         battery_missing_or_reversed=battery_missing_or_reversed,
         battery_short=battery_short,
@@ -520,7 +525,7 @@ def parse_status_4010(content: bytes) -> PanelStatus:
     # (partitions_armed).
     activated = bool((status30 >> 3) & 0x01)
     zone_open_flag = bool((status30 >> 2) & 0x01)
-    problem = bool(status30 & 0x01) and bool((status30 >> 5) & 0x01)
+    problem = bool(status30 & 0x01) and bool((status30 >> 4) & 0x01)
     # Sirene: bit 2 do Status46 (NÃO bit 1 do Status30 — corrigido, mesmo
     # raciocínio do parse_status_2018).
     siren_on = bool((status46 >> 2) & 0x01)
@@ -584,7 +589,7 @@ def parse_status_4010(content: bytes) -> PanelStatus:
         partition_bit_map=partition_bit_map,
         siren_on=siren_on,
         problem=problem,
-        ac_power_ok=not bool(status36 & 0x01),
+        ac_power_fault=bool(status36 & 0x01),
         battery_low=bool((status36 >> 1) & 0x01),
         battery_missing_or_reversed=battery_missing_or_reversed,
         battery_short=battery_short,

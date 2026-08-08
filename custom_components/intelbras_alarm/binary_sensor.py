@@ -18,9 +18,14 @@ from .coordinator import IntelbrasAlarmCoordinator
 
 DIAGNOSTIC_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
     BinarySensorEntityDescription(
-        key="ac_power_ok",
+        key="ac_power_fault",
         name="Rede elétrica",
-        device_class=BinarySensorDeviceClass.PLUG,
+        # PROBLEM (não mais PLUG): a pedido do usuário, o valor não é mais
+        # invertido — reflete o bit 0 do Status29/36 cru (1 = falta de
+        # rede elétrica = problema), então "ligado" agora significa
+        # problema, não "está funcionando" (semântica de device_class
+        # PROBLEM, não PLUG).
+        device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
@@ -126,7 +131,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
 class IntelbrasDiagnosticBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Sensores de diagnóstico geral da central (rede, bateria, problemas)."""
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
 
     def __init__(
         self,
@@ -161,7 +166,7 @@ class IntelbrasTriggeredBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator
     tem a sirene ativa.
     """
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_name = "Central disparada"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
@@ -206,7 +211,7 @@ class IntelbrasZoneOpenFlagBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordina
     Regra confirmada pelo usuário a partir de captura real de bytes.
     """
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_name = "Alguma zona aberta"
     _attr_device_class = BinarySensorDeviceClass.OPENING
 
@@ -237,9 +242,13 @@ class IntelbrasKeypadProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordin
     a pedido do usuário — informação relacionada, mas de um byte diferente.
     """
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    # Desabilitado por padrão: nem toda instalação tem teclados/receptores
+    # extras cabeados/pareados — o usuário habilita manualmente os que
+    # existem de fato (Configurações → Entidades → mostrar desabilitadas).
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, keypad: int) -> None:
         super().__init__(coordinator)
@@ -266,9 +275,10 @@ class IntelbrasKeypadProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordin
 class IntelbrasReceiverProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Problema no receptor N (Status30 2018/1016, Status37 4010)."""
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, receiver: int) -> None:
         super().__init__(coordinator)
@@ -288,7 +298,7 @@ class IntelbrasReceiverProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoord
 class IntelbrasPgmExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Problema no expansor de PGM N (Status38, só família 4010)."""
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -310,7 +320,7 @@ class IntelbrasPgmExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCo
 class IntelbrasZoneExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Problema no expansor de zonas N (Status38/39, só família 4010)."""
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
@@ -339,7 +349,7 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
     demais como atributos.
     """
 
-    _attr_has_entity_name = False
+    _attr_has_entity_name = True
     _attr_device_class = BinarySensorDeviceClass.OPENING
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, zone: int) -> None:
