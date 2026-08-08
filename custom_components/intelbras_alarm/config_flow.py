@@ -172,28 +172,140 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
-    """Permite ajustar o intervalo de polling após a configuração inicial."""
+    """Permite ajustar senha, senhas por partição, opções de código e
+    intervalo de polling **sem precisar remover e reconfigurar a
+    integração do zero** — acessível pelo botão "Configurar" da própria
+    integração (Ajustes → Dispositivos e Serviços → Intelbras Alarm →
+    Configurar).
+
+    Host/porta e o modelo detectado não são editáveis aqui de propósito
+    (são praticamente fixos depois da instalação; trocar de central é
+    melhor tratado removendo e reconfigurando do zero).
+    """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self.config_entry = config_entry
+        self._pending_data: dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+        errors: dict[str, str] = {}
 
-        current = self.config_entry.options.get(
-            OPT_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL
-        )
+        if user_input is not None:
+            password = user_input[CONF_PASSWORD]
+            if not (4 <= len(password) <= 6) or not password.isdigit():
+                errors["base"] = "invalid_password"
+
+            if not errors:
+                try:
+                    parse_zone_spec(user_input[CONF_ENABLED_ZONES])
+                except InvalidZoneSpec:
+                    errors[CONF_ENABLED_ZONES] = "invalid_zone_spec"
+
+            if not errors:
+                # Confere a nova senha contra a central de verdade antes de
+                # salvar — evita gravar uma senha errada e só descobrir no
+                # próximo ciclo de polling, com a integração já quebrada.
+                try:
+                    await async_detect_model(
+                        self.config_entry.data["host"],
+                        self.config_entry.data["port"],
+                        password,
+                    )
+                except PanelConnectionError:
+                    errors["base"] = "cannot_connect"
+                except UpdateFailed:
+                    errors["base"] = "cannot_connect"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("Erro inesperado ao validar a nova senha")
+                    errors["base"] = "unknown"
+
+            if not errors:
+                self._pending_data = {
+                    CONF_PASSWORD: password,
+                    CONF_CODE_REQUIRED_ARM: user_input[CONF_CODE_REQUIRED_ARM],
+                    CONF_CODE_REQUIRED_DISARM: user_input[CONF_CODE_REQUIRED_DISARM],
+                    CONF_ENABLED_ZONES: user_input[CONF_ENABLED_ZONES],
+                    OPT_POLLING_INTERVAL: user_input[OPT_POLLING_INTERVAL],
+                }
+                if self.config_entry.data.get("family") == FAMILY_4010:
+                    return await self.async_step_partition_passwords()
+                return self._save()
+
+        data = self.config_entry.data
+        options = self.config_entry.options
         schema = vol.Schema(
             {
-                vol.Required(OPT_POLLING_INTERVAL, default=current): vol.All(
-                    vol.Coerce(float), vol.Range(min=MIN_POLLING_INTERVAL, max=MAX_POLLING_INTERVAL)
-                )
+                vol.Required(CONF_PASSWORD, default=data.get(CONF_PASSWORD, "")): str,
+                vol.Optional(
+                    CONF_CODE_REQUIRED_ARM,
+                    default=data.get(CONF_CODE_REQUIRED_ARM, DEFAULT_CODE_REQUIRED_ARM),
+                ): bool,
+                vol.Optional(
+                    CONF_CODE_REQUIRED_DISARM,
+                    default=data.get(CONF_CODE_REQUIRED_DISARM, DEFAULT_CODE_REQUIRED_DISARM),
+                ): bool,
+                vol.Optional(
+                    CONF_ENABLED_ZONES,
+                    default=data.get(CONF_ENABLED_ZONES, DEFAULT_ENABLED_ZONES_SPEC),
+                ): str,
+                vol.Required(
+                    OPT_POLLING_INTERVAL,
+                    default=options.get(OPT_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL),
+                ): vol.All(vol.Coerce(float), vol.Range(min=MIN_POLLING_INTERVAL, max=MAX_POLLING_INTERVAL)),
             }
         )
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+    async def async_step_partition_passwords(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        current = self.config_entry.data.get(CONF_PARTITION_PASSWORDS, {})
+
+        if user_input is not None:
+            partition_passwords: dict[str, str] = {}
+            for partition, field in PARTITION_PASSWORD_FIELDS.items():
+                value = user_input.get(field, "").strip()
+                if not value:
+                    continue
+                if not (4 <= len(value) <= 6) or not value.isdigit():
+                    errors[field] = "invalid_password"
+                    continue
+                partition_passwords[partition] = value
+
+            if not errors:
+                self._pending_data[CONF_PARTITION_PASSWORDS] = partition_passwords
+                return self._save()
+
+        schema = vol.Schema(
+            {
+                vol.Optional(field, default=current.get(partition, "")): str
+                for partition, field in PARTITION_PASSWORD_FIELDS.items()
+            }
+        )
+        return self.async_show_form(
+            step_id="partition_passwords", data_schema=schema, errors=errors
+        )
+
+    def _save(self) -> FlowResult:
+        # Senha, opções de código e zonas habilitadas vivem em entry.data
+        # (não em options) — atualizamos ali diretamente. async_update_entry
+        # dispara o mesmo listener de reload já usado para mudanças de
+        # options, então a integração recarrega sozinha com os novos
+        # valores, sem exigir remover/adicionar de novo.
+        new_data = dict(self.config_entry.data)
+        new_data[CONF_PASSWORD] = self._pending_data[CONF_PASSWORD]
+        new_data[CONF_CODE_REQUIRED_ARM] = self._pending_data[CONF_CODE_REQUIRED_ARM]
+        new_data[CONF_CODE_REQUIRED_DISARM] = self._pending_data[CONF_CODE_REQUIRED_DISARM]
+        new_data[CONF_ENABLED_ZONES] = self._pending_data[CONF_ENABLED_ZONES]
+        if CONF_PARTITION_PASSWORDS in self._pending_data:
+            new_data[CONF_PARTITION_PASSWORDS] = self._pending_data[CONF_PARTITION_PASSWORDS]
+        self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
+        return self.async_create_entry(
+            title="", data={OPT_POLLING_INTERVAL: self._pending_data[OPT_POLLING_INTERVAL]}
+        )
 
 
 class InvalidPassword(Exception):

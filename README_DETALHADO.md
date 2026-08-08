@@ -82,15 +82,20 @@ usado anteriormente.
    automaticamente. Deixar em branco usa a senha principal para aquela
    partição. Isso não interfere com "Exigir senha ao ativar/desativar": se
    marcado, o valor digitado na UI continua tendo prioridade (ver item 4).
-6. Se o modelo for **AMT 4010 SMART**, os **nomes de zona são lidos da
-   EEPROM automaticamente** na primeira configuração (comando `0x5C`,
-   endereço `0x0800 + (zona-1)×16`, registros ASCII de 16 bytes). Para
-   ressincronizar depois de renomear zonas pelo teclado da central, use o
-   botão **"Sincronizar nomes de zona"** (só existe para a família 4010,
-   pois é a única com esse mapa de EEPROM confirmado).
-7. Em **Configurar** na própria integração é possível ajustar o
-   **intervalo de consulta de status (polling)** — sugerido e padrão
-   **0,25 s**, o mesmo valor usado pelo app oficial AMT Mobile.
+7. Em **Configurar** na própria integração (Ajustes → Dispositivos e
+   Serviços → Intelbras Alarm → Configurar) é possível ajustar, **sem
+   remover e reconfigurar a integração do zero**:
+   - a **senha principal** (validada contra a própria central antes de
+     salvar, para não gravar uma senha errada e só descobrir depois);
+   - as **senhas por partição** (só 4010);
+   - as opções de **exigir senha ao ativar/desativar**;
+   - as **zonas habilitadas por padrão**;
+   - o **intervalo de consulta de status (polling)** — sugerido e padrão
+     **0,25 s**, o mesmo valor usado pelo app oficial AMT Mobile.
+
+   O endereço IP, a porta e o modelo detectado não são editáveis por ali
+   de propósito — trocar de central é melhor tratado removendo e
+   reconfigurando a integração do zero.
 
 ---
 

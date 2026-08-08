@@ -42,11 +42,38 @@
   "options": {
     "step": {
       "init": {
-        "title": "Opções da central Intelbras",
+        "title": "Configurar central Intelbras",
+        "description": "Ajuste a senha, as opções de exigir senha na UI, as zonas habilitadas por padrão e o intervalo de polling — sem precisar remover e reconfigurar a integração do zero. O endereço IP, a porta e o modelo detectado não são editáveis aqui (remova e adicione a integração novamente se precisar mudar de central).",
         "data": {
+          "password": "Senha (4 a 6 dígitos)",
+          "code_required_arm": "Pedir a senha para ATIVAR (armar) pelo Home Assistant",
+          "code_required_disarm": "Pedir a senha para DESATIVAR (desarmar) pelo Home Assistant",
+          "enabled_zones": "Zonas habilitadas por padrão",
           "polling_interval": "Intervalo de consulta de status (segundos)"
+        },
+        "data_description": {
+          "password": "A nova senha é validada contra a própria central antes de ser salva.",
+          "code_required_arm": "Desmarcado: ativa com um toque, sem digitar nada. Marcado: pede a senha antes de ativar.",
+          "code_required_disarm": "Desmarcado: desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar.",
+          "enabled_zones": "Formato: intervalos e/ou números separados por ; (ex.: 1-5;8;10-15)."
+        }
+      },
+      "partition_passwords": {
+        "title": "Senhas por partição (opcional)",
+        "description": "Deixe em branco a(s) que não tiver — nesse caso, a senha principal (informada na tela anterior) é usada automaticamente para aquela partição.",
+        "data": {
+          "password_a": "Senha da Partição A",
+          "password_b": "Senha da Partição B",
+          "password_c": "Senha da Partição C",
+          "password_d": "Senha da Partição D"
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Não foi possível validar a nova senha contra a central. Verifique se ela está correta e se a central está acessível.",
+      "invalid_password": "A senha deve ter entre 4 e 6 dígitos numéricos.",
+      "invalid_zone_spec": "Formato inválido. Use intervalos e/ou números separados por ; (ex.: 1-5;8;10-15).",
+      "unknown": "Erro inesperado."
     }
   }
 }

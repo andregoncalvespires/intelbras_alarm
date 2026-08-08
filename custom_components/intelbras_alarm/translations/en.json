@@ -42,11 +42,38 @@
   "options": {
     "step": {
       "init": {
-        "title": "Intelbras panel options",
+        "title": "Configure the Intelbras panel",
+        "description": "Adjust the password, the require-code-in-UI options, the default enabled zones, and the polling interval — without removing and re-adding the integration. IP, port and the detected model aren't editable here (remove and re-add the integration if you need to change panels).",
         "data": {
+          "password": "Password (4 to 6 digits)",
+          "code_required_arm": "Ask for the password to ARM via Home Assistant",
+          "code_required_disarm": "Ask for the password to DISARM via Home Assistant",
+          "enabled_zones": "Zones enabled by default",
           "polling_interval": "Status polling interval (seconds)"
+        },
+        "data_description": {
+          "password": "The new password is validated against the panel itself before being saved.",
+          "code_required_arm": "Unchecked: arms with a single tap, no typing. Checked: asks for the password before arming.",
+          "code_required_disarm": "Unchecked: disarms with a single tap, no typing. Checked: asks for the password before disarming.",
+          "enabled_zones": "Format: ranges and/or numbers separated by ; (e.g. 1-5;8;10-15)."
+        }
+      },
+      "partition_passwords": {
+        "title": "Per-partition passwords (optional)",
+        "description": "Leave any blank — that partition falls back to the main password from the previous screen.",
+        "data": {
+          "password_a": "Partition A password",
+          "password_b": "Partition B password",
+          "password_c": "Partition C password",
+          "password_d": "Partition D password"
         }
       }
+    },
+    "error": {
+      "cannot_connect": "Could not validate the new password against the panel. Check that it's correct and the panel is reachable.",
+      "invalid_password": "Password must be 4 to 6 numeric digits.",
+      "invalid_zone_spec": "Invalid format. Use ranges and/or numbers separated by ; (e.g. 1-5;8;10-15).",
+      "unknown": "Unexpected error."
     }
   }
 }

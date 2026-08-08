@@ -38,9 +38,12 @@ adicione a URL deste repositório (categoria Integração) → instale
    diferentes por partição (A/B/C/D), se sua central tiver — opcional,
    deixe em branco para usar a senha principal em todas.
 
-Depois de configurada, em **Configurar** na própria integração dá pra
-ajustar o intervalo de consulta de status (padrão 0,25 s, igual ao app
-oficial).
+Depois de configurada, em **Configurar** na própria integração (Ajustes →
+Dispositivos e Serviços → Intelbras Alarm → Configurar) dá pra ajustar,
+**sem remover e reconfigurar do zero**: a senha principal (validada contra
+a central antes de salvar), as senhas por partição (4010), as opções de
+exigir senha, as zonas habilitadas por padrão e o intervalo de polling. IP,
+porta e modelo não são editáveis ali — para isso, remova e reconfigure.
 
 ---
 
