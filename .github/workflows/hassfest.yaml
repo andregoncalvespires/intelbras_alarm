@@ -1,0 +1,16 @@
+name: Validate with hassfest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 0 * * *" # roda 1x por dia, para pegar quebras causadas por novas versões do Home Assistant
+  workflow_dispatch:
+
+jobs:
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
