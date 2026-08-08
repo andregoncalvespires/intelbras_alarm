@@ -616,6 +616,23 @@ O nome de cada entidade é **prefixado pelo nome do dispositivo** (ex.:
 versão anterior chegou a remover esse prefixo a pedido do usuário, depois
 revertida — mantido o comportamento padrão.
 
+> **Efeito colateral dessa reversão**: alternar `has_entity_name` entre
+> `True`/`False` faz o Home Assistant tentar **migrar o `entity_id`**
+> internamente para acompanhar o novo nome sugerido — mesmo o `unique_id`
+> nunca tendo mudado. Se a instalação já tiver passado por várias dessas
+> trocas ao longo do tempo (como aconteceu durante o desenvolvimento
+> desta integração), o registro de entidades pode acumular IDs "órfãos"
+> de tentativas anteriores, causando avisos como *"Cannot migrate history
+> for entity_id ... because the new entity_id is already in use"* nos
+> logs do `recorder`. Isso é só um aviso: a entidade em si continua
+> funcionando normalmente com seu `entity_id` atual — o que se perde é a
+> continuidade do **histórico/estatísticas antigas** ficando presas sob o
+> ID abandonado. Não é causado pela tela de "Configurar" (opções) nem por
+> nenhuma mudança nela — é resultado de trocas de `has_entity_name` em
+> versões anteriores. Se incomodar, pode limpar manualmente em
+> Configurações → Entidades → filtrar por "indisponível"/os IDs antigos
+> mencionados no log → excluir.
+
 ## Data/Hora da central: não é BCD, é o valor cru do byte
 
 Diferente do que a documentação oficial afirma (seção 7.4/7.5: "cada

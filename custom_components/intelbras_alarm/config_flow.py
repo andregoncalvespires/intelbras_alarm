@@ -168,7 +168,10 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> IntelbrasAlarmOptionsFlow:
-        return IntelbrasAlarmOptionsFlow(config_entry)
+        # Não passamos config_entry para o construtor de propósito — ver
+        # docstring da classe. Fazer isso quebra com AttributeError/500 em
+        # Home Assistant Core 2025.12+.
+        return IntelbrasAlarmOptionsFlow()
 
 
 class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
@@ -181,10 +184,19 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
     Host/porta e o modelo detectado não são editáveis aqui de propósito
     (são praticamente fixos depois da instalação; trocar de central é
     melhor tratado removendo e reconfigurando do zero).
+
+    IMPORTANTE: não armazenamos ``config_entry`` manualmente no
+    ``__init__`` (`self.config_entry = config_entry`) — desde o Home
+    Assistant Core 2025.12, isso é uma *property* somente-leitura da
+    classe base (preenchida automaticamente pelo framework), e tentar
+    atribuir a ela quebra com ``AttributeError`` / 500 Internal Server
+    Error ("Server got itself in trouble") ao abrir a tela de
+    configuração. `self.config_entry` já fica disponível sem precisarmos
+    fazer nada — ver
+    https://developers.home-assistant.io/blog/2024/11/12/options-flow/.
     """
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    def __init__(self) -> None:
         self._pending_data: dict[str, Any] = {}
 
     async def async_step_init(
