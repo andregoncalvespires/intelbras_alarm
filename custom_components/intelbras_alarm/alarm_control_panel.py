@@ -25,32 +25,59 @@ from .const import (
     DOMAIN,
     FAMILY_4010,
     MANUFACTURER,
+    ZONE_SPEC_FORMAT_HELP,
+    InvalidZoneSpec,
+    parse_zone_spec,
 )
 from .coordinator import IntelbrasAlarmCoordinator
 
 PARTITION_NAMES = {"A": "Partição A", "B": "Partição B", "C": "Partição C", "D": "Partição D"}
 
 SERVICE_BYPASS_ZONE = "bypass_zone"
-ATTR_ZONE = "zone"
+ATTR_ZONES = "zones"
 ATTR_BYPASS = "bypass"
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
+    from homeassistant.core import callback
+
     data: IntelbrasAlarmData = hass.data[DOMAIN][entry.entry_id]
     coordinator = data.coordinator
 
-    entities: list[AlarmControlPanelEntity] = [
-        IntelbrasCentralAlarmPanel(coordinator, entry)
-    ]
+    async_add_entities([IntelbrasCentralAlarmPanel(coordinator, entry)])
 
-    if coordinator.data and coordinator.data.partition_mode_enabled:
-        partitions = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
-        for partition in partitions:
-            entities.append(IntelbrasPartitionAlarmPanel(coordinator, entry, partition))
+    # As partições só existem se a central estiver particionada — mas essa
+    # informação só é conhecida depois da primeira leitura de status bem
+    # sucedida, que pode não ter acontecido ainda no instante em que esta
+    # plataforma é configurada (ex.: conexão ocupada por outro cliente,
+    # como o app AMT Remoto, no momento exato do (re)carregamento). Uma
+    # checagem única aqui (como havia antes) deixava as partições
+    # permanentemente ausentes pelo resto da sessão nesse cenário, só
+    # resolvido recarregando manualmente a integração. Em vez disso,
+    # observamos o coordinator continuamente e criamos as partições assim
+    # que (e sempre que) dados válidos estiverem disponíveis pela primeira
+    # vez — sem exigir reload.
+    partitions_added: set[str] = set()
 
-    async_add_entities(entities)
+    @callback
+    def _maybe_add_partitions() -> None:
+        status = coordinator.data
+        if status is None or not status.partition_mode_enabled:
+            return
+        wanted = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
+        new_entities = [
+            IntelbrasPartitionAlarmPanel(coordinator, entry, p)
+            for p in wanted
+            if p not in partitions_added
+        ]
+        if new_entities:
+            partitions_added.update(p for p in wanted)
+            async_add_entities(new_entities)
+
+    _maybe_add_partitions()  # cobre o caso comum: dados já disponíveis agora
+    entry.async_on_unload(coordinator.async_add_listener(_maybe_add_partitions))
 
     # Serviço `intelbras_alarm.bypass_zone`, chamável de automações/scripts
     # e disponível para qualquer entidade alarm_control_panel desta central
@@ -62,7 +89,7 @@ async def async_setup_entry(
     platform.async_register_entity_service(
         SERVICE_BYPASS_ZONE,
         {
-            vol.Required(ATTR_ZONE): vol.All(vol.Coerce(int), vol.Range(min=1, max=64)),
+            vol.Required(ATTR_ZONES): cv.string,
             vol.Optional(ATTR_BYPASS, default=True): cv.boolean,
         },
         "async_bypass_zone_service",
@@ -82,7 +109,10 @@ def _device_info(entry: ConfigEntry, coordinator: IntelbrasAlarmCoordinator) -> 
 class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControlPanelEntity):
     """Comportamento comum: mapeamento de status -> estado do alarm_control_panel."""
 
-    _attr_has_entity_name = True
+    # Sem has_entity_name: o nome de cada entidade não é prefixado pelo
+    # nome do dispositivo (a pedido do usuário) — cada subclasse define seu
+    # próprio _attr_name completo e autônomo.
+    _attr_has_entity_name = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
@@ -164,45 +194,45 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
             return AlarmControlPanelState.ARMED_HOME
         return AlarmControlPanelState.ARMED_AWAY
 
-    async def async_bypass_zone_service(self, zone: int, bypass: bool = True) -> None:
+    async def async_bypass_zone_service(self, zones: str, bypass: bool = True) -> None:
         """Implementa o serviço `intelbras_alarm.bypass_zone`.
 
-        Anula (``bypass=True``) ou reativa (``bypass=False``) uma zona
-        específica pelo número, preservando as demais anulações já
-        existentes. Diferente das ações de ativar/desativar, este comando
-        **sempre** usa a senha memorizada da central — não é afetado pelas
-        opções "Exigir senha ao ativar/desativar" (só se aplicam a
-        armar/desarmar). Chamável de automações e scripts com:
+        Anula (``bypass=True``) ou reativa (``bypass=False``) uma ou mais
+        zonas de uma vez, preservando as demais anulações já existentes.
+        ``zones`` aceita intervalos e/ou números individuais separados por
+        ponto e vírgula — ZONE_SPEC_FORMAT_HELP. Diferente das ações de
+        ativar/desativar, este comando **sempre** usa a senha memorizada
+        da central — não é afetado pelas opções "Exigir senha ao
+        ativar/desativar" (só se aplicam a armar/desarmar).
 
         ```yaml
         service: intelbras_alarm.bypass_zone
         target:
           entity_id: alarm_control_panel.central
         data:
-          zone: 5
+          zones: "1-5;8;10-15"
           bypass: true
         ```
         """
-        if not (1 <= zone <= self.coordinator.native_zone_count):
-            raise HomeAssistantError(
-                f"Zona {zone} fora do intervalo válido para este modelo "
-                f"(1 a {self.coordinator.native_zone_count})"
-            )
+        try:
+            zone_set = parse_zone_spec(zones, max_zone=self.coordinator.native_zone_count)
+        except InvalidZoneSpec as err:
+            raise HomeAssistantError(f"{err} — {ZONE_SPEC_FORMAT_HELP}") from err
+        if not zone_set:
+            raise HomeAssistantError(f"Nenhuma zona informada — {ZONE_SPEC_FORMAT_HELP}")
         if bypass:
-            await self.coordinator.async_bypass_zones({zone})
+            await self.coordinator.async_bypass_zones(zone_set)
         else:
-            await self.coordinator.async_unbypass_zone(zone)
+            await self.coordinator.async_unbypass_zones(zone_set)
 
 
 class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
     """Entidade que representa a central como um todo (todas as partições)."""
 
-    _attr_translation_key = "central"
-
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_central"
-        self._attr_name = None  # usa o nome do dispositivo
+        self._attr_name = "Central"
         # Modo Stay (armed_home) só é oferecido em modelos confirmados como
         # suportando de verdade o comando 0x50 — ver coordinator.supports_stay.
         self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
@@ -218,6 +248,12 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
 
     @property
     def extra_state_attributes(self) -> dict:
+        """Atributos gerais da central.
+
+        "Problema", "Sirene ligada", "Rede elétrica ok" e "Bateria nível"
+        propositalmente NÃO estão aqui — já existem como entidades próprias
+        (`binary_sensor`/`sensor`), então repeti-los aqui seria redundante.
+        """
         status = self.coordinator.data
         if status is None:
             return {}
@@ -226,11 +262,7 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
             {
                 "modelo": status.model_name,
                 "firmware": status.firmware,
-                "problema": status.problem,
-                "sirene_ligada": status.siren_on,
-                "rede_eletrica_ok": status.ac_power_ok,
-                "bateria_nivel": status.battery_level,
-                "relogio_sincronizado": status.panel_datetime_synced,
+                "data_hora_central": status.panel_datetime_str,
             }
         )
         return attrs
@@ -268,7 +300,6 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         self._partition = partition
         self._attr_unique_id = f"{entry.entry_id}_partition_{partition.lower()}"
         self._attr_name = PARTITION_NAMES[partition]
-        self._attr_translation_key = "partition"
         # Mesma restrição de modo Stay da central — ver coordinator.supports_stay.
         self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
         if coordinator.supports_stay:

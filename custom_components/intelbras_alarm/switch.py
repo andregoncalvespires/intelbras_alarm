@@ -38,7 +38,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
 class IntelbrasPgmSwitch(CoordinatorEntity[IntelbrasAlarmCoordinator], SwitchEntity):
     """PGM da central, controlada pelo comando 0x50 (liga/desliga)."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, pgm: int) -> None:
         super().__init__(coordinator)
@@ -73,7 +73,7 @@ class IntelbrasPgmSwitch(CoordinatorEntity[IntelbrasAlarmCoordinator], SwitchEnt
 class IntelbrasSirenSwitch(CoordinatorEntity[IntelbrasAlarmCoordinator], SwitchEntity):
     """Liga/desliga a sirene (comandos 0x43/0x63)."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_icon = "mdi:bullhorn"
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
@@ -108,7 +108,7 @@ class IntelbrasConnectionSwitch(SwitchEntity):
     com a central automaticamente (ver ``__init__.py``).
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_icon = "mdi:lan-connect"
     _attr_entity_registry_enabled_default = True
     _attr_should_poll = False

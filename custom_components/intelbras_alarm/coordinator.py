@@ -12,17 +12,21 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .const import (
     ACK_OK,
     CMD_EEPROM_READ,
+    CONF_ENABLED_ZONES,
+    DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_TIMEOUT_ETHERNET,
     FAMILY_2018,
     FAMILY_4010,
     FAMILY_MAX_ZONES,
     FAMILY_STATUS_CMD,
+    InvalidZoneSpec,
     MODEL_TABLE,
     MODEL_UNKNOWN,
     PGM_ADDRESSES,
     ZONE_NAME_BASE_ADDRESS,
     ZONE_NAME_MAX_READ,
     ZONE_NAME_RECORD_LEN,
+    parse_zone_spec,
 )
 from .panel_client import PanelClient, PanelConnectionError
 from .protocol import (
@@ -89,6 +93,23 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.last_command_frame_hex: str | None = None  # bytes do comando enviado
         self.last_command_response_hex: str | None = None  # bytes da resposta a esse comando
 
+        # Zonas que nascem habilitadas por padrão no Home Assistant,
+        # configurável pelo usuário na inclusão da integração (formato
+        # "1-8;17-24" — ver const.parse_zone_spec). Um valor mal formatado
+        # não deveria acontecer (validado no config_flow), mas por
+        # segurança cai no padrão em vez de quebrar a integração.
+        try:
+            self._enabled_zones = parse_zone_spec(
+                entry.data.get(CONF_ENABLED_ZONES, DEFAULT_ENABLED_ZONES_SPEC)
+            )
+        except InvalidZoneSpec:
+            _LOGGER.warning(
+                "Especificação de zonas habilitadas inválida em '%s'; usando padrão '%s'",
+                entry.data.get(CONF_ENABLED_ZONES),
+                DEFAULT_ENABLED_ZONES_SPEC,
+            )
+            self._enabled_zones = parse_zone_spec(DEFAULT_ENABLED_ZONES_SPEC)
+
         super().__init__(
             hass,
             _LOGGER,
@@ -123,6 +144,15 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     @property
     def supports_zone_names(self) -> bool:
         return self.family == FAMILY_4010
+
+    def zone_enabled_by_default(self, zone: int) -> bool:
+        """Se a zona deve nascer habilitada no registro de entidades.
+
+        Configurável pelo usuário na inclusão da integração (ver
+        ``const.CONF_ENABLED_ZONES``); ``const.DEFAULT_ENABLED_ZONES_SPEC``
+        é usado se não informado.
+        """
+        return zone in self._enabled_zones
 
     @property
     def supports_stay(self) -> bool:
@@ -274,37 +304,55 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if violated_zones:
             await self.async_bypass_zones(violated_zones)
 
+    async def async_bypass_open_or_violated_zones(self) -> None:
+        """Anula, numa única operação, todas as zonas abertas OU violadas.
+
+        Como o comando 0x42 é absoluto (redefine o estado de anulação das
+        64 zonas de uma vez — ver ``async_bypass_zones``), fazer isso em
+        duas chamadas separadas (abertas, depois violadas) faria a segunda
+        chamada desfazer o que a primeira acabou de anular caso usassem
+        `replace=True`; usando a união dos dois conjuntos numa única
+        chamada, o problema não existe.
+        """
+        if self.data is None:
+            return
+        zones = {zone for zone, v in self.data.zones_open.items() if v}
+        zones |= {zone for zone, v in self.data.zones_violated.items() if v}
+        if zones:
+            await self.async_bypass_zones(zones)
+
     async def async_clear_bypass(self) -> None:
         """Remove todas as anulações, reativando todas as zonas."""
         frame = cmd_bypass(self._password, {})
         await self._send_and_check(frame, "Remover todas as anulações de zona")
         await self.async_request_refresh()
 
-    async def async_unbypass_zone(self, zone: int) -> None:
-        """Reativa uma única zona, preservando as demais anulações existentes.
+    async def async_unbypass_zones(self, zones: set[int]) -> None:
+        """Reativa uma ou mais zonas, preservando as demais anulações existentes.
 
-        Contraparte de ``async_bypass_zones`` para uma zona só (usada pelo
-        botão "Reativar zona selecionada" e pelo serviço
-        ``intelbras_alarm.bypass_zone`` com ``bypass: false``).
+        Contraparte de ``async_bypass_zones`` — usada pelo serviço
+        ``intelbras_alarm.bypass_zone`` com ``bypass: false``. Aceita
+        múltiplas zonas na mesma chamada pelo mesmo motivo que
+        ``async_bypass_zones`` aceita um conjunto: o comando 0x42 é
+        absoluto, então reativar zona a zona em chamadas separadas
+        desfaria anulações de outras zonas no meio do caminho.
         """
         current: set[int] = set()
         if self.data is not None:
             current = {z for z, bypassed in self.data.zones_bypassed.items() if bypassed}
         _LOGGER.debug(
-            "async_unbypass_zone: zona=%s, anuladas_antes=%s, estava_anulada=%s",
-            zone,
+            "async_unbypass_zones: zonas=%s, anuladas_antes=%s",
+            zones,
             current,
-            zone in current,
         )
-        current.discard(zone)
+        current -= zones
         frame = cmd_bypass(self._password, {z: True for z in current})
-        await self._send_and_check(frame, f"Reativar zona {zone}")
+        zones_fmt = ", ".join(str(z) for z in sorted(zones))
+        await self._send_and_check(frame, f"Reativar zona(s) {zones_fmt}")
         await self.async_request_refresh()
         _LOGGER.debug(
-            "async_unbypass_zone: após refresh, anuladas_agora=%s (zona %s ainda anulada? %s)",
+            "async_unbypass_zones: após refresh, anuladas_agora=%s",
             {z for z, b in self.data.zones_bypassed.items() if b} if self.data else "sem status",
-            zone,
-            self.data.zones_bypassed.get(zone) if self.data else "desconhecido",
         )
 
     async def _send_and_check(self, frame: bytes, action_label: str | None = None) -> None:

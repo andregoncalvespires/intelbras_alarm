@@ -1,7 +1,7 @@
-"""Entidades button: sincronizar nomes de zona (4010) e pânico."""
+"""Entidades button: sincronizar nomes de zona (4010), pânico e anulação de zonas."""
 from __future__ import annotations
 
-from homeassistant.components.button import ButtonEntity, ButtonEntityDescription
+from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
@@ -31,6 +31,7 @@ async def async_setup_entry(
     ]
     entities.append(IntelbrasBypassOpenZonesButton(coordinator, entry))
     entities.append(IntelbrasBypassViolatedZonesButton(coordinator, entry))
+    entities.append(IntelbrasBypassOpenOrViolatedZonesButton(coordinator, entry))
     entities.append(IntelbrasClearBypassButton(coordinator, entry))
 
     if coordinator.supports_zone_names:
@@ -43,32 +44,50 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
     return DeviceInfo(identifiers={(DOMAIN, entry.entry_id)}, name=entry.title, manufacturer=MANUFACTURER)
 
 
-class IntelbrasSyncZoneNamesButton(ButtonEntity):
+class _IntelbrasButtonBase(ButtonEntity):
+    """Base comum: disponibilidade acompanha o coordinator.
+
+    Sem isso, um botão continuava aparecendo "disponível" mesmo com o
+    switch "Conexão com a central" desligado (ou qualquer outra falha de
+    comunicação) — podendo levar o usuário a pressionar um comando que na
+    prática não seria entregue. Ligado a ``coordinator.last_update_success``
+    (o mesmo sinal que todas as outras entidades baseadas em
+    ``CoordinatorEntity`` já usam), sem herdar de ``CoordinatorEntity``
+    propriamente (esses botões não exibem dados do coordinator, só agem).
+    """
+
+    _attr_has_entity_name = False
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        self._coordinator = coordinator
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def available(self) -> bool:
+        return self._coordinator.last_update_success
+
+
+class IntelbrasSyncZoneNamesButton(_IntelbrasButtonBase):
     """Rebusca os nomes de zona gravados na EEPROM da central (somente 4010).
 
     Útil quando os nomes das zonas são alterados pelo teclado da central
     depois da configuração inicial da integração.
     """
 
-    _attr_has_entity_name = True
     _attr_name = "Sincronizar nomes de zona"
     _attr_icon = "mdi:sync"
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_sync_zone_names"
-        self._attr_device_info = _device_info(entry)
 
     async def async_press(self) -> None:
         await self._coordinator.async_refresh_zone_names()
 
 
-class IntelbrasPanicButton(ButtonEntity):
+class IntelbrasPanicButton(_IntelbrasButtonBase):
     """Dispara um dos quatro tipos de pânico suportados pelo comando 0x45."""
-
-    _attr_has_entity_name = True
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(
         self,
@@ -79,18 +98,17 @@ class IntelbrasPanicButton(ButtonEntity):
         code: int,
         icon: str,
     ) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator, entry)
         self._code = code
         self._attr_unique_id = f"{entry.entry_id}_{key}"
         self._attr_name = name
         self._attr_icon = icon
-        self._attr_device_info = _device_info(entry)
 
     async def async_press(self) -> None:
         await self._coordinator.async_panic(self._code)
 
 
-class IntelbrasBypassOpenZonesButton(ButtonEntity):
+class IntelbrasBypassOpenZonesButton(_IntelbrasButtonBase):
     """Anula (bypass) todas as zonas atualmente abertas (comando 0x42).
 
     Equivalente ao atalho existente no fluxo Node-RED original: útil para
@@ -99,21 +117,18 @@ class IntelbrasBypassOpenZonesButton(ButtonEntity):
     Anulações já existentes em outras zonas são preservadas.
     """
 
-    _attr_has_entity_name = True
     _attr_name = "Anular zonas abertas"
     _attr_icon = "mdi:door-open"
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_bypass_open_zones"
-        self._attr_device_info = _device_info(entry)
 
     async def async_press(self) -> None:
         await self._coordinator.async_bypass_open_zones()
 
 
-class IntelbrasBypassViolatedZonesButton(ButtonEntity):
+class IntelbrasBypassViolatedZonesButton(_IntelbrasButtonBase):
     """Anula (bypass) todas as zonas atualmente violadas (comando 0x42).
 
     Útil após um disparo, para conseguir rearmar a central sem que a zona
@@ -121,32 +136,47 @@ class IntelbrasBypassViolatedZonesButton(ButtonEntity):
     Anulações já existentes em outras zonas são preservadas.
     """
 
-    _attr_has_entity_name = True
     _attr_name = "Anular zonas violadas"
     _attr_icon = "mdi:alert-circle-outline"
-    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_bypass_violated_zones"
-        self._attr_device_info = _device_info(entry)
 
     async def async_press(self) -> None:
         await self._coordinator.async_bypass_violated_zones()
 
 
-class IntelbrasClearBypassButton(ButtonEntity):
-    """Remove TODAS as anulações de zona (reativa todas as zonas de uma vez)."""
+class IntelbrasBypassOpenOrViolatedZonesButton(_IntelbrasButtonBase):
+    """Anula, numa única operação, todas as zonas abertas OU violadas.
 
-    _attr_has_entity_name = True
-    _attr_name = "Remover todas as anulações de zona"
-    _attr_icon = "mdi:restore"
-    _attr_entity_category = EntityCategory.CONFIG
+    Diferente de apertar os dois botões separados em sequência: o comando
+    0x42 é absoluto (redefine a anulação das 64 zonas de uma vez), então a
+    segunda anulação apagaria o efeito da primeira se cada botão calculasse
+    seu alvo de forma independente. Este botão une os dois conjuntos antes
+    de montar um único comando.
+    """
+
+    _attr_name = "Anular zonas abertas ou violadas"
+    _attr_icon = "mdi:shield-off-outline"
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
-        self._coordinator = coordinator
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.entry_id}_bypass_open_or_violated_zones"
+
+    async def async_press(self) -> None:
+        await self._coordinator.async_bypass_open_or_violated_zones()
+
+
+class IntelbrasClearBypassButton(_IntelbrasButtonBase):
+    """Remove TODAS as anulações de zona (reativa todas as zonas de uma vez)."""
+
+    _attr_name = "Remover todas as anulações de zona"
+    _attr_icon = "mdi:restore"
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_clear_bypass"
-        self._attr_device_info = _device_info(entry)
 
     async def async_press(self) -> None:
         await self._coordinator.async_clear_bypass()

@@ -241,6 +241,42 @@ def _bcd_to_int(value: int) -> int:
     return (value >> 4) * 10 + (value & 0x0F)
 
 
+def _format_panel_datetime(
+    content: bytes, *, hh: int, mm: int, dd: int, mo: int, yy: int
+) -> str | None:
+    """Converte os 5 bytes BCD de data/hora em ``"dd/mm/aaaa hh:mm"``.
+
+    Cada byte tem um dígito decimal em cada nibble (ex.: 0x12 representa o
+    número 12, não 18) — por isso passa por ``_bcd_to_int``, que antes desta
+    correção existia no código mas nunca era chamada (a conversão anterior
+    usava o byte cru diretamente, então uma central às 12h media
+    incorretamente "18h" internamente).
+    """
+    try:
+        idx = [hh, mm, dd, mo, yy]
+        if max(idx) >= len(content):
+            return None
+        hour = _bcd_to_int(content[hh])
+        minute = _bcd_to_int(content[mm])
+        day = _bcd_to_int(content[dd])
+        month = _bcd_to_int(content[mo])
+        year = 2000 + _bcd_to_int(content[yy])
+        if not (0 <= hour <= 23 and 0 <= minute <= 59 and 1 <= day <= 31 and 1 <= month <= 12):
+            return None
+        return f"{day:02d}/{month:02d}/{year:04d} {hour:02d}:{minute:02d}"
+    except (ValueError, IndexError):
+        return None
+
+
+def _bits_to_map(byte_value: int, numbers: list[int]) -> dict[int, bool]:
+    """Mapeia os bits 0..N-1 de ``byte_value`` para os rótulos em ``numbers``.
+
+    Usado para leituras não contíguas (ex.: zonas 1-8 e 11-18, pulando 9-10
+    — assim como documentado nos Status34/35 e Status44 da central).
+    """
+    return {numbers[bit]: bool((byte_value >> bit) & 0x01) for bit in range(len(numbers))}
+
+
 @dataclass
 class PanelStatus:
     """Representação normalizada do status da central, família-agnóstica."""
@@ -272,11 +308,18 @@ class PanelStatus:
     aux_overload: bool
     battery_level: int
     pgm_state: dict[int, bool]
-    panel_datetime_synced: bool
+    panel_datetime_str: str | None  # "dd/mm/aaaa hh:mm" já formatado, decodificado de BCD
     siren_wire_cut: bool
     siren_short_circuit: bool
     phone_line_cut: bool
     event_communication_failure: bool
+    keypad_problem: dict[int, bool]  # {1..4: bool}
+    receiver_problem: dict[int, bool]  # {1..4: bool}
+    keypad_tamper: dict[int, bool]  # {1..4: bool} — atributo das entidades de problema no teclado
+    zones_tamper: dict[int, bool]  # zonas com leitura de tamper disponível (1-8 e 11-18 na 2018/1016; 1-8 na 4010)
+    zones_short_circuit: dict[int, bool]  # mesmo alcance de zonas_tamper
+    pgm_expander_problem: dict[int, bool]  # {1..4: bool} — só 4010, vazio na 2018/1016
+    zone_expander_problem: dict[int, bool]  # {1..6: bool} — só 4010, vazio na 2018/1016
 
 
 def parse_status_2018(content: bytes) -> PanelStatus:
@@ -299,7 +342,13 @@ def parse_status_2018(content: bytes) -> PanelStatus:
     status22 = content[21] if len(content) > 21 else 0
     status23 = content[22] if len(content) > 22 else 0
     status29 = content[28] if len(content) > 28 else 0
+    status30_problems = content[29] if len(content) > 29 else 0  # teclado/receptor
+    status32 = content[31] if len(content) > 31 else 0  # tamper teclado
     status33 = content[32] if len(content) > 32 else 0
+    status34 = content[33] if len(content) > 33 else 0  # tamper zonas 1-8
+    status35 = content[34] if len(content) > 34 else 0  # tamper zonas 11-18
+    status36 = content[35] if len(content) > 35 else 0  # curto zonas 1-8
+    status37 = content[36] if len(content) > 36 else 0  # curto zonas 11-18
     status38 = content[37] if len(content) > 37 else 0
 
     partition_mode_enabled = bool(status21 & 0x01)
@@ -363,6 +412,19 @@ def parse_status_2018(content: bytes) -> PanelStatus:
         2: bool((status38 >> 5) & 0x01),
     }
 
+    # Problema no teclado 1-4 / receptor 1-4 (Status30, seção 7.4/pág.10)
+    keypad_problem = {n: bool((status30_problems >> (n - 1)) & 0x01) for n in range(1, 5)}
+    receiver_problem = {n: bool((status30_problems >> (n - 1 + 4)) & 0x01) for n in range(1, 5)}
+    # Tamper no teclado 1-4 (Status32 bits 4-7)
+    keypad_tamper = {n: bool((status32 >> (n - 1 + 4)) & 0x01) for n in range(1, 5)}
+    # Tamper/curto-circuito nas zonas — Status34/35 e 36/37 pulam as zonas
+    # 9 e 10 (assim mesmo na documentação oficial, não é engano nosso).
+    zones_tamper = {**_bits_to_map(status34, list(range(1, 9))), **_bits_to_map(status35, list(range(11, 19)))}
+    zones_short_circuit = {
+        **_bits_to_map(status36, list(range(1, 9))),
+        **_bits_to_map(status37, list(range(11, 19))),
+    }
+
     return PanelStatus(
         model_key=model_key,
         model_name=model_name,
@@ -391,11 +453,18 @@ def parse_status_2018(content: bytes) -> PanelStatus:
         aux_overload=bool((status29 >> 4) & 0x01),
         battery_level=battery_level,
         pgm_state=pgm_state,
-        panel_datetime_synced=_datetime_synced(content, hh=23, mm=24, dd=25, mo=26, yy=27),
+        panel_datetime_str=_format_panel_datetime(content, hh=23, mm=24, dd=25, mo=26, yy=27),
         siren_wire_cut=bool(status33 & 0x01),
         siren_short_circuit=bool((status33 >> 1) & 0x01),
         phone_line_cut=bool((status33 >> 2) & 0x01),
         event_communication_failure=bool((status33 >> 3) & 0x01),
+        keypad_problem=keypad_problem,
+        receiver_problem=receiver_problem,
+        keypad_tamper=keypad_tamper,
+        zones_tamper=zones_tamper,
+        zones_short_circuit=zones_short_circuit,
+        pgm_expander_problem={},
+        zone_expander_problem={},
     )
 
 
@@ -420,7 +489,13 @@ def parse_status_4010(content: bytes) -> PanelStatus:
     status29 = content[28] if len(content) > 28 else 0
     status30 = content[29] if len(content) > 29 else 0
     status36 = content[35] if len(content) > 35 else 0
+    status37_problems = content[36] if len(content) > 36 else 0  # teclado/receptor
+    status38 = content[37] if len(content) > 37 else 0  # expansores PGM/zona 1-4
+    status39 = content[38] if len(content) > 38 else 0  # expansores zona 5-6
+    status42 = content[41] if len(content) > 41 else 0  # tamper teclado
     status43 = content[42] if len(content) > 42 else 0
+    status44 = content[43] if len(content) > 43 else 0  # tamper zonas 1-8
+    status45 = content[44] if len(content) > 44 else 0  # curto zonas 1-8
     status46 = content[45] if len(content) > 45 else 0
     status53 = content[52] if len(content) > 52 else 0
     status54 = content[53] if len(content) > 53 else 0
@@ -476,6 +551,18 @@ def parse_status_4010(content: bytes) -> PanelStatus:
     for bit in range(8):
         pgm_state[12 + bit] = bool((status54 >> bit) & 0x01)
 
+    keypad_problem = {n: bool((status37_problems >> (n - 1)) & 0x01) for n in range(1, 5)}
+    receiver_problem = {n: bool((status37_problems >> (n - 1 + 4)) & 0x01) for n in range(1, 5)}
+    keypad_tamper = {n: bool((status42 >> (n - 1 + 4)) & 0x01) for n in range(1, 5)}
+    # Só zonas 1-8 têm tamper/curto documentados para a 4010 (sem
+    # equivalente às 11-18 da família 2018/1016).
+    zones_tamper = _bits_to_map(status44, list(range(1, 9)))
+    zones_short_circuit = _bits_to_map(status45, list(range(1, 9)))
+    pgm_expander_problem = {n: bool((status38 >> (n - 1)) & 0x01) for n in range(1, 5)}
+    zone_expander_problem = {n: bool((status38 >> (n - 1 + 4)) & 0x01) for n in range(1, 5)}
+    zone_expander_problem[5] = bool(status39 & 0x01)
+    zone_expander_problem[6] = bool((status39 >> 1) & 0x01)
+
     return PanelStatus(
         model_key=model_key,
         model_name=model_name,
@@ -504,34 +591,19 @@ def parse_status_4010(content: bytes) -> PanelStatus:
         aux_overload=bool((status36 >> 4) & 0x01),
         battery_level=battery_level,
         pgm_state=pgm_state,
-        panel_datetime_synced=_datetime_synced(content, hh=30, mm=31, dd=32, mo=33, yy=34),
+        panel_datetime_str=_format_panel_datetime(content, hh=30, mm=31, dd=32, mo=33, yy=34),
         siren_wire_cut=bool(status43 & 0x01),
         siren_short_circuit=bool((status43 >> 1) & 0x01),
         phone_line_cut=bool((status43 >> 2) & 0x01),
         event_communication_failure=bool((status43 >> 3) & 0x01),
+        keypad_problem=keypad_problem,
+        receiver_problem=receiver_problem,
+        keypad_tamper=keypad_tamper,
+        zones_tamper=zones_tamper,
+        zones_short_circuit=zones_short_circuit,
+        pgm_expander_problem=pgm_expander_problem,
+        zone_expander_problem=zone_expander_problem,
     )
-
-
-def _datetime_synced(content: bytes, *, hh: int, mm: int, dd: int, mo: int, yy: int) -> bool:
-    """Confere se o relógio da central está a menos de 10 min do relógio local."""
-    import datetime
-
-    try:
-        idx = [hh, mm, dd, mo, yy]
-        if max(idx) >= len(content):
-            return False
-        panel_dt = datetime.datetime(
-            2000 + content[yy],
-            max(1, min(12, content[mo])),
-            max(1, min(28, content[dd])),
-            min(23, content[hh]),
-            min(59, content[mm]),
-            tzinfo=datetime.timezone.utc,
-        )
-    except (ValueError, IndexError):
-        return False
-    now = datetime.datetime.now(datetime.timezone.utc)
-    return abs((now - panel_dt).total_seconds()) < 600
 
 
 def parse_status(content: bytes, family: str) -> PanelStatus:

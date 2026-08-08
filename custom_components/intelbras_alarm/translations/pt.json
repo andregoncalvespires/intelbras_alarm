@@ -9,11 +9,13 @@
           "port": "Porta",
           "password": "Senha (4 a 6 dígitos)",
           "code_required_arm": "Pedir a senha para ATIVAR (armar) pelo Home Assistant",
-          "code_required_disarm": "Pedir a senha para DESATIVAR (desarmar) pelo Home Assistant"
+          "code_required_disarm": "Pedir a senha para DESATIVAR (desarmar) pelo Home Assistant",
+          "enabled_zones": "Zonas habilitadas por padrão"
         },
         "data_description": {
           "code_required_arm": "Desmarcado (padrão): ativa com um toque, sem digitar nada. Marcado: pede a senha antes de ativar.",
-          "code_required_disarm": "Desmarcado (padrão): desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar — recomendado se você quer uma trava extra nessa ação, a mais sensível das duas."
+          "code_required_disarm": "Desmarcado (padrão): desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar — recomendado se você quer uma trava extra nessa ação, a mais sensível das duas.",
+          "enabled_zones": "Formato: intervalos e/ou números separados por ; (ex.: 1-5;8;10-15). As zonas fora dessa lista continuam existindo, só ficam desabilitadas até você ativá-las manualmente em Configurações → Entidades."
         }
       },
       "partition_passwords": {
@@ -30,6 +32,7 @@
     "error": {
       "cannot_connect": "Não foi possível conectar à central. Verifique o IP, a porta e se a senha está correta.",
       "invalid_password": "A senha deve ter entre 4 e 6 dígitos numéricos.",
+      "invalid_zone_spec": "Formato inválido. Use intervalos e/ou números separados por ; (ex.: 1-5;8;10-15).",
       "unknown": "Erro inesperado."
     },
     "abort": {
@@ -44,25 +47,6 @@
           "polling_interval": "Intervalo de consulta de status (segundos)"
         }
       }
-    }
-  },
-  "entity": {
-    "alarm_control_panel": {
-      "central": { "name": "Central" },
-      "partition": { "name": "Partição" }
-    },
-    "binary_sensor": {
-      "ac_power": { "name": "Rede elétrica" },
-      "battery_low": { "name": "Bateria fraca" },
-      "battery_missing": { "name": "Bateria ausente ou invertida" },
-      "battery_short": { "name": "Curto-circuito na bateria" },
-      "aux_overload": { "name": "Sobrecarga na saída auxiliar" },
-      "problem": { "name": "Problema na central" },
-      "siren_wire_cut": { "name": "Corte no fio da sirene" },
-      "siren_short_circuit": { "name": "Curto-circuito no fio da sirene" },
-      "phone_line_cut": { "name": "Corte na linha telefônica" },
-      "event_communication_failure": { "name": "Falha ao comunicar evento" },
-      "partitioned": { "name": "Particionamento habilitado" }
     }
   }
 }

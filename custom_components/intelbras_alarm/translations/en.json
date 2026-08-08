@@ -9,11 +9,13 @@
           "port": "Port",
           "password": "Password (4 to 6 digits)",
           "code_required_arm": "Ask for the password to ARM via Home Assistant",
-          "code_required_disarm": "Ask for the password to DISARM via Home Assistant"
+          "code_required_disarm": "Ask for the password to DISARM via Home Assistant",
+          "enabled_zones": "Zones enabled by default"
         },
         "data_description": {
           "code_required_arm": "Unchecked (default): arms with a single tap, no typing. Checked: asks for the password before arming.",
-          "code_required_disarm": "Unchecked (default): disarms with a single tap, no typing. Checked: asks for the password before disarming — recommended if you want an extra lock on this action, the more sensitive of the two."
+          "code_required_disarm": "Unchecked (default): disarms with a single tap, no typing. Checked: asks for the password before disarming — recommended if you want an extra lock on this action, the more sensitive of the two.",
+          "enabled_zones": "Format: ranges and/or numbers separated by ; (e.g. 1-5;8;10-15). Zones outside this list still exist, just disabled until you enable them manually under Settings → Entities."
         }
       },
       "partition_passwords": {
@@ -30,6 +32,7 @@
     "error": {
       "cannot_connect": "Could not connect to the panel. Check the IP, port and password.",
       "invalid_password": "Password must be 4 to 6 numeric digits.",
+      "invalid_zone_spec": "Invalid format. Use ranges and/or numbers separated by ; (e.g. 1-5;8;10-15).",
       "unknown": "Unexpected error."
     },
     "abort": {
@@ -44,25 +47,6 @@
           "polling_interval": "Status polling interval (seconds)"
         }
       }
-    }
-  },
-  "entity": {
-    "alarm_control_panel": {
-      "central": { "name": "Central" },
-      "partition": { "name": "Partition" }
-    },
-    "binary_sensor": {
-      "ac_power": { "name": "AC power" },
-      "battery_low": { "name": "Low battery" },
-      "battery_missing": { "name": "Battery missing or reversed" },
-      "battery_short": { "name": "Battery short circuit" },
-      "aux_overload": { "name": "Auxiliary output overload" },
-      "problem": { "name": "Panel problem" },
-      "siren_wire_cut": { "name": "Siren wire cut" },
-      "siren_short_circuit": { "name": "Siren wire short circuit" },
-      "phone_line_cut": { "name": "Phone line cut" },
-      "event_communication_failure": { "name": "Event communication failure" },
-      "partitioned": { "name": "Partitioning enabled" }
     }
   }
 }

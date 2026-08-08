@@ -51,7 +51,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
 class IntelbrasBatterySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
     """Nível estimado da bateria interna da central (0/25/50/75/100 %)."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "Bateria"
     _attr_device_class = SensorDeviceClass.BATTERY
     _attr_native_unit_of_measurement = PERCENTAGE
@@ -84,7 +84,7 @@ class IntelbrasZoneCountSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Sen
     sem precisar somar manualmente os `binary_sensor` de zona.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_native_unit_of_measurement = "zonas"
     _attr_state_class = "measurement"
@@ -137,7 +137,7 @@ class IntelbrasLastCommandResultSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
     Node-RED original.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "Último comando"
     _attr_icon = "mdi:message-text-outline"
     _attr_entity_category = EntityCategory.DIAGNOSTIC

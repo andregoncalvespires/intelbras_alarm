@@ -13,73 +13,73 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IntelbrasAlarmData
-from .const import DOMAIN, MANUFACTURER, zone_enabled_by_default
+from .const import DOMAIN, MANUFACTURER
 from .coordinator import IntelbrasAlarmCoordinator
 
 DIAGNOSTIC_SENSORS: tuple[BinarySensorEntityDescription, ...] = (
     BinarySensorEntityDescription(
         key="ac_power_ok",
-        translation_key="ac_power",
+        name="Rede elétrica",
         device_class=BinarySensorDeviceClass.PLUG,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="battery_low",
-        translation_key="battery_low",
+        name="Bateria fraca",
         device_class=BinarySensorDeviceClass.BATTERY,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="battery_missing_or_reversed",
-        translation_key="battery_missing",
+        name="Bateria ausente ou invertida",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="battery_short",
-        translation_key="battery_short",
+        name="Curto-circuito na bateria",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="aux_overload",
-        translation_key="aux_overload",
+        name="Sobrecarga na saída auxiliar",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="problem",
-        translation_key="problem",
+        name="Problema na central",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="siren_wire_cut",
-        translation_key="siren_wire_cut",
+        name="Corte no fio da sirene",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="siren_short_circuit",
-        translation_key="siren_short_circuit",
+        name="Curto-circuito no fio da sirene",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="phone_line_cut",
-        translation_key="phone_line_cut",
+        name="Corte na linha telefônica",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="event_communication_failure",
-        translation_key="event_communication_failure",
+        name="Falha ao comunicar evento",
         device_class=BinarySensorDeviceClass.PROBLEM,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
     BinarySensorEntityDescription(
         key="partition_mode_enabled",
-        translation_key="partitioned",
+        name="Particionamento habilitado",
         device_class=None,
         entity_category=EntityCategory.DIAGNOSTIC,
     ),
@@ -103,6 +103,16 @@ async def async_setup_entry(
     entities.append(IntelbrasTriggeredBinarySensor(coordinator, entry))
     entities.append(IntelbrasZoneOpenFlagBinarySensor(coordinator, entry))
 
+    for n in range(1, 5):
+        entities.append(IntelbrasKeypadProblemBinarySensor(coordinator, entry, n))
+        entities.append(IntelbrasReceiverProblemBinarySensor(coordinator, entry, n))
+
+    if coordinator.family == "4010":
+        for n in range(1, 5):
+            entities.append(IntelbrasPgmExpanderProblemBinarySensor(coordinator, entry, n))
+        for n in range(1, 7):
+            entities.append(IntelbrasZoneExpanderProblemBinarySensor(coordinator, entry, n))
+
     for zone in range(1, coordinator.native_zone_count + 1):
         entities.append(IntelbrasZoneBinarySensor(coordinator, entry, zone))
 
@@ -116,7 +126,7 @@ def _device_info(entry: ConfigEntry) -> DeviceInfo:
 class IntelbrasDiagnosticBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Sensores de diagnóstico geral da central (rede, bateria, problemas)."""
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
 
     def __init__(
         self,
@@ -127,6 +137,7 @@ class IntelbrasDiagnosticBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinato
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        self._attr_name = description.name
         self._attr_device_info = _device_info(entry)
 
     @property
@@ -150,7 +161,7 @@ class IntelbrasTriggeredBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator
     tem a sirene ativa.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "Central disparada"
     _attr_device_class = BinarySensorDeviceClass.PROBLEM
 
@@ -195,7 +206,7 @@ class IntelbrasZoneOpenFlagBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordina
     Regra confirmada pelo usuário a partir de captura real de bytes.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_name = "Alguma zona aberta"
     _attr_device_class = BinarySensorDeviceClass.OPENING
 
@@ -219,6 +230,105 @@ class IntelbrasZoneOpenFlagBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordina
         return {f"{status.status_byte_name}_bruto": f"0x{status.status_byte_raw:02X}"}
 
 
+class IntelbrasKeypadProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
+    """Problema no teclado N (Status30 2018/1016, Status37 4010).
+
+    Expõe o tamper daquele teclado (Status32/42, bits 4-7) como atributo,
+    a pedido do usuário — informação relacionada, mas de um byte diferente.
+    """
+
+    _attr_has_entity_name = False
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, keypad: int) -> None:
+        super().__init__(coordinator)
+        self._keypad = keypad
+        self._attr_unique_id = f"{entry.entry_id}_keypad_problem_{keypad}"
+        self._attr_name = f"Problema no teclado {keypad}"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        return status.keypad_problem.get(self._keypad)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        status = self.coordinator.data
+        if status is None:
+            return {}
+        return {"tamper": status.keypad_tamper.get(self._keypad, False)}
+
+
+class IntelbrasReceiverProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
+    """Problema no receptor N (Status30 2018/1016, Status37 4010)."""
+
+    _attr_has_entity_name = False
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, receiver: int) -> None:
+        super().__init__(coordinator)
+        self._receiver = receiver
+        self._attr_unique_id = f"{entry.entry_id}_receiver_problem_{receiver}"
+        self._attr_name = f"Problema no receptor {receiver}"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        return status.receiver_problem.get(self._receiver)
+
+
+class IntelbrasPgmExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
+    """Problema no expansor de PGM N (Status38, só família 4010)."""
+
+    _attr_has_entity_name = False
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, expander: int) -> None:
+        super().__init__(coordinator)
+        self._expander = expander
+        self._attr_unique_id = f"{entry.entry_id}_pgm_expander_problem_{expander}"
+        self._attr_name = f"Problema no expansor de PGM {expander}"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        return status.pgm_expander_problem.get(self._expander)
+
+
+class IntelbrasZoneExpanderProblemBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
+    """Problema no expansor de zonas N (Status38/39, só família 4010)."""
+
+    _attr_has_entity_name = False
+    _attr_device_class = BinarySensorDeviceClass.PROBLEM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, expander: int) -> None:
+        super().__init__(coordinator)
+        self._expander = expander
+        self._attr_unique_id = f"{entry.entry_id}_zone_expander_problem_{expander}"
+        self._attr_name = f"Problema no expansor de zonas {expander}"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def is_on(self) -> bool | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        return status.zone_expander_problem.get(self._expander)
+
+
 class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], BinarySensorEntity):
     """Estado (aberta/fechada) de uma zona, com atributos extras de diagnóstico.
 
@@ -229,7 +339,7 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
     demais como atributos.
     """
 
-    _attr_has_entity_name = True
+    _attr_has_entity_name = False
     _attr_device_class = BinarySensorDeviceClass.OPENING
 
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, zone: int) -> None:
@@ -237,7 +347,7 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
         self._zone = zone
         self._attr_unique_id = f"{entry.entry_id}_zone_{zone}"
         self._attr_device_info = _device_info(entry)
-        self._attr_entity_registry_enabled_default = zone_enabled_by_default(zone)
+        self._attr_entity_registry_enabled_default = coordinator.zone_enabled_by_default(zone)
 
     @property
     def name(self) -> str:
@@ -255,8 +365,21 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
         status = self.coordinator.data
         if status is None:
             return {}
-        return {
+        attrs: dict = {
             "violada": status.zones_violated.get(self._zone, False),
             "anulada_bypass": status.zones_bypassed.get(self._zone, False),
-            "bateria_baixa": status.zones_low_battery.get(self._zone, False),
         }
+        # Só inclui os atributos abaixo se a central realmente reporta esse
+        # dado para esta zona específica — algumas faixas de zona não têm
+        # leitura de bateria/tamper/curto disponível no protocolo (ex.: a
+        # 4010 nunca reporta bateria para as zonas 1-16, que são sempre
+        # cabeadas, nunca sem fio; mostrar "False" ali seria enganoso, como
+        # se fosse um dado monitorado e sempre OK, em vez de simplesmente
+        # não aplicável).
+        if self._zone in status.zones_low_battery:
+            attrs["bateria_baixa"] = status.zones_low_battery[self._zone]
+        if self._zone in status.zones_tamper:
+            attrs["tamper"] = status.zones_tamper[self._zone]
+        if self._zone in status.zones_short_circuit:
+            attrs["curto_circuito"] = status.zones_short_circuit[self._zone]
+        return attrs

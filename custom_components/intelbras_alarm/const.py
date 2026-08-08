@@ -15,6 +15,7 @@ CONF_ZONE_COUNT = "zone_count"
 CONF_PGM_COUNT = "pgm_count"
 CONF_CODE_REQUIRED_ARM = "code_required_arm"
 CONF_CODE_REQUIRED_DISARM = "code_required_disarm"
+CONF_ENABLED_ZONES = "enabled_zones"
 
 OPT_POLLING_INTERVAL = "polling_interval"
 
@@ -25,6 +26,11 @@ MAX_POLLING_INTERVAL = 10.0
 DEFAULT_TIMEOUT_ETHERNET = 8  # segundos, conforme item 5 da documentação ISECNet
 DEFAULT_CODE_REQUIRED_ARM = False
 DEFAULT_CODE_REQUIRED_DISARM = False
+# Formato: intervalos e/ou números individuais separados por ponto e
+# vírgula, ex.: "1-8;17-24" ou "1-5;8;10-15". Ver ZONE_SPEC_FORMAT_HELP
+# (usado no rótulo do campo, no config_flow e no serviço bypass_zone).
+DEFAULT_ENABLED_ZONES_SPEC = "1-8;17-24"
+ZONE_SPEC_FORMAT_HELP = "Formato: intervalos e/ou números separados por ; (ex.: 1-5;8;10-15)"
 
 # ---------------------------------------------------------------------------
 # Comandos do protocolo ISECMobile (campo <Comando> dentro do frame 0x21..0x21)
@@ -117,14 +123,47 @@ MODEL_ZONE_COUNT: dict[str, int] = {row[0]: row[3] for row in MODEL_TABLE.values
 
 # Nº de zonas iniciais (1..N) que nascem habilitadas por padrão no registro
 # de entidades do Home Assistant — as demais (até o total de
-# MODEL_ZONE_COUNT) são criadas desabilitadas.
-# Zonas 1-8 e 17-24 nascem habilitadas por padrão no Home Assistant (as
-# faixas mais comumente cabeadas nativamente nos quadros de zona
-# Intelbras); as demais são criadas desabilitadas, para o usuário ativar
-# manualmente as que sua instalação realmente usa (Configurações →
-# Entidades → mostrar desabilitadas).
-def zone_enabled_by_default(zone: int) -> bool:
-    return (1 <= zone <= 8) or (17 <= zone <= 24)
+# MODEL_ZONE_COUNT) são criadas desabilitadas. Configurável pelo usuário na
+# inclusão da integração (CONF_ENABLED_ZONES); DEFAULT_ENABLED_ZONES_SPEC é
+# usado se o campo for deixado em branco.
+class InvalidZoneSpec(ValueError):
+    """Formato de intervalo/lista de zonas inválido (ver ZONE_SPEC_FORMAT_HELP)."""
+
+
+def parse_zone_spec(spec: str, max_zone: int = 64) -> set[int]:
+    """Converte ``"1-5;8;10-15"`` em ``{1,2,3,4,5,8,10,11,12,13,14,15}``.
+
+    Aceita intervalos (``a-b``) e números individuais, separados por ``;``.
+    Espaços em torno dos números/intervalos são ignorados. Levanta
+    ``InvalidZoneSpec`` para qualquer formato ou valor fora de 1..max_zone.
+    """
+    zones: set[int] = set()
+    spec = spec.strip()
+    if not spec:
+        return zones
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "-" in part:
+            bounds = part.split("-")
+            if len(bounds) != 2:
+                raise InvalidZoneSpec(f"Intervalo inválido: {part!r}")
+            try:
+                start, end = int(bounds[0].strip()), int(bounds[1].strip())
+            except ValueError as err:
+                raise InvalidZoneSpec(f"Intervalo inválido: {part!r}") from err
+            if start > end:
+                start, end = end, start
+            zones.update(range(start, end + 1))
+        else:
+            try:
+                zones.add(int(part))
+            except ValueError as err:
+                raise InvalidZoneSpec(f"Número de zona inválido: {part!r}") from err
+    if zones and (min(zones) < 1 or max(zones) > max_zone):
+        raise InvalidZoneSpec(f"Zonas devem estar entre 1 e {max_zone}")
+    return zones
 
 # Modelos cujo comando de ativação em modo Stay (0x50) é suportado de
 # verdade pela central — confirmado pelo usuário: só a família 4010 e a

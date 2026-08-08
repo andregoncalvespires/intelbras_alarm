@@ -13,18 +13,22 @@ from homeassistant.helpers.update_coordinator import UpdateFailed
 from .const import (
     CONF_CODE_REQUIRED_ARM,
     CONF_CODE_REQUIRED_DISARM,
+    CONF_ENABLED_ZONES,
     CONF_MODEL,
     CONF_PARTITION_PASSWORDS,
     CONF_PASSWORD,
     DEFAULT_CODE_REQUIRED_ARM,
     DEFAULT_CODE_REQUIRED_DISARM,
+    DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_PORT,
     DEFAULT_POLLING_INTERVAL,
     DOMAIN,
     FAMILY_4010,
+    InvalidZoneSpec,
     MAX_POLLING_INTERVAL,
     MIN_POLLING_INTERVAL,
     OPT_POLLING_INTERVAL,
+    parse_zone_spec,
 )
 from .coordinator import async_detect_model
 from .panel_client import PanelConnectionError
@@ -38,6 +42,7 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Required(CONF_PASSWORD): str,
         vol.Optional(CONF_CODE_REQUIRED_ARM, default=DEFAULT_CODE_REQUIRED_ARM): bool,
         vol.Optional(CONF_CODE_REQUIRED_DISARM, default=DEFAULT_CODE_REQUIRED_DISARM): bool,
+        vol.Optional(CONF_ENABLED_ZONES, default=DEFAULT_ENABLED_ZONES_SPEC): str,
     }
 )
 
@@ -55,6 +60,14 @@ async def _validate_and_detect(hass: HomeAssistant, data: dict[str, Any]) -> dic
     password = data[CONF_PASSWORD]
     if not (4 <= len(password) <= 6) or not password.isdigit():
         raise InvalidPassword
+
+    # Só valida o FORMATO aqui (o modelo, e portanto o nº máximo de zonas,
+    # ainda não foi detectado neste ponto do fluxo) — o intervalo de
+    # 1..nº_zonas_do_modelo é reconferido depois, no coordinator, com o
+    # padrão como fallback silencioso caso algo mude entre versões.
+    # parse_zone_spec já levanta InvalidZoneSpec diretamente; deixamos
+    # propagar para o chamador tratar.
+    parse_zone_spec(data[CONF_ENABLED_ZONES])
 
     model_key, model_name, family = await async_detect_model(
         data["host"], data["port"], password
@@ -89,6 +102,8 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 detected = await _validate_and_detect(self.hass, user_input)
             except InvalidPassword:
                 errors["base"] = "invalid_password"
+            except InvalidZoneSpec:
+                errors[CONF_ENABLED_ZONES] = "invalid_zone_spec"
             except PanelConnectionError:
                 errors["base"] = "cannot_connect"
             except UpdateFailed:
@@ -106,6 +121,7 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "family": detected["family"],
                     CONF_CODE_REQUIRED_ARM: user_input[CONF_CODE_REQUIRED_ARM],
                     CONF_CODE_REQUIRED_DISARM: user_input[CONF_CODE_REQUIRED_DISARM],
+                    CONF_ENABLED_ZONES: user_input[CONF_ENABLED_ZONES],
                 }
                 if detected["family"] == FAMILY_4010:
                     return await self.async_step_partition_passwords()
