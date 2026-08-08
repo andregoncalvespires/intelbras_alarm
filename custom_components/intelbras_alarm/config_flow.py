@@ -32,6 +32,7 @@ from .const import (
 )
 from .coordinator import async_detect_model
 from .panel_client import PanelConnectionError
+from .protocol import NackError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -210,21 +211,20 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "invalid_password"
 
             if not errors:
-                try:
-                    parse_zone_spec(user_input[CONF_ENABLED_ZONES])
-                except InvalidZoneSpec:
-                    errors[CONF_ENABLED_ZONES] = "invalid_zone_spec"
-
-            if not errors:
                 # Confere a nova senha contra a central de verdade antes de
                 # salvar — evita gravar uma senha errada e só descobrir no
                 # próximo ciclo de polling, com a integração já quebrada.
+                # IMPORTANTE: reaproveita a conexão TCP persistente já
+                # aberta pelo coordinator, em vez de abrir uma segunda —
+                # a central só aceita um cliente conectado por vez (mesmo
+                # motivo do problema com o app AMT Remoto), então uma
+                # segunda conexão simultânea para "só testar" falhava e
+                # rejeitava até senhas corretas.
+                coordinator = self.hass.data[DOMAIN][self.config_entry.entry_id].coordinator
                 try:
-                    await async_detect_model(
-                        self.config_entry.data["host"],
-                        self.config_entry.data["port"],
-                        password,
-                    )
+                    await coordinator.async_validate_password(password)
+                except NackError:
+                    errors["base"] = "password_rejected"
                 except PanelConnectionError:
                     errors["base"] = "cannot_connect"
                 except UpdateFailed:
@@ -238,7 +238,6 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_PASSWORD: password,
                     CONF_CODE_REQUIRED_ARM: user_input[CONF_CODE_REQUIRED_ARM],
                     CONF_CODE_REQUIRED_DISARM: user_input[CONF_CODE_REQUIRED_DISARM],
-                    CONF_ENABLED_ZONES: user_input[CONF_ENABLED_ZONES],
                     OPT_POLLING_INTERVAL: user_input[OPT_POLLING_INTERVAL],
                 }
                 if self.config_entry.data.get("family") == FAMILY_4010:
@@ -258,10 +257,17 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_CODE_REQUIRED_DISARM,
                     default=data.get(CONF_CODE_REQUIRED_DISARM, DEFAULT_CODE_REQUIRED_DISARM),
                 ): bool,
-                vol.Optional(
-                    CONF_ENABLED_ZONES,
-                    default=data.get(CONF_ENABLED_ZONES, DEFAULT_ENABLED_ZONES_SPEC),
-                ): str,
+                # "Zonas habilitadas por padrão" (CONF_ENABLED_ZONES) NÃO
+                # está aqui de propósito: entity_registry_enabled_default
+                # só é lido pelo Home Assistant na primeira vez que cada
+                # entidade é criada — como as zonas já foram todas criadas
+                # na configuração inicial, mudar esse valor aqui não teria
+                # nenhum efeito visível nas entidades existentes (o
+                # Home Assistant não reaplica o "padrão" depois). Deixar
+                # o campo aqui pareceria funcionar sem fazer nada de
+                # verdade, então foi removido — continua disponível só na
+                # configuração inicial, quando as entidades ainda não
+                # existem.
                 vol.Required(
                     OPT_POLLING_INTERVAL,
                     default=options.get(OPT_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL),
@@ -302,16 +308,16 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
         )
 
     def _save(self) -> FlowResult:
-        # Senha, opções de código e zonas habilitadas vivem em entry.data
-        # (não em options) — atualizamos ali diretamente. async_update_entry
-        # dispara o mesmo listener de reload já usado para mudanças de
-        # options, então a integração recarrega sozinha com os novos
-        # valores, sem exigir remover/adicionar de novo.
+        # Senha e opções de código vivem em entry.data (não em options) —
+        # atualizamos ali diretamente. async_update_entry dispara o mesmo
+        # listener de reload já usado para mudanças de options, então a
+        # integração recarrega sozinha com os novos valores, sem exigir
+        # remover/adicionar de novo. "Zonas habilitadas por padrão" fica
+        # de fora de propósito — ver comentário em async_step_init.
         new_data = dict(self.config_entry.data)
         new_data[CONF_PASSWORD] = self._pending_data[CONF_PASSWORD]
         new_data[CONF_CODE_REQUIRED_ARM] = self._pending_data[CONF_CODE_REQUIRED_ARM]
         new_data[CONF_CODE_REQUIRED_DISARM] = self._pending_data[CONF_CODE_REQUIRED_DISARM]
-        new_data[CONF_ENABLED_ZONES] = self._pending_data[CONF_ENABLED_ZONES]
         if CONF_PARTITION_PASSWORDS in self._pending_data:
             new_data[CONF_PARTITION_PASSWORDS] = self._pending_data[CONF_PARTITION_PASSWORDS]
         self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)

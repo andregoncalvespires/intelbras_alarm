@@ -173,6 +173,37 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         """Senha ISECMobile principal, usada para validar códigos digitados na UI."""
         return self._password
 
+    async def async_validate_password(self, password: str) -> None:
+        """Testa uma senha candidata reaproveitando a conexão persistente
+        já aberta com a central — usada pela tela de "Configurar" (opções)
+        para confirmar uma nova senha antes de salvar.
+
+        Importante: **não abre uma segunda conexão TCP** para testar —
+        muitos modelos (confirmado em campo) só aceitam um cliente
+        conectado por vez, o mesmo motivo pelo qual o app AMT Remoto
+        conectado ao mesmo tempo já causou falha de conexão nesta
+        integração antes. Em vez disso, monta um comando de consulta de
+        status com a senha candidata e envia pela conexão já existente —
+        o protocolo ISECMobile leva a senha em cada frame individual, não
+        na conexão TCP em si, então isso funciona sem desconectar nada.
+
+        Levanta ``NackError`` (ex.: "Senha incorreta") se a central
+        rejeitar, ou ``PanelConnectionError`` se a conexão atual não
+        estiver disponível.
+        """
+        frame = _build_status_frame(password, self.family)
+        response = await self.client.send_command(frame)
+        # Uma resposta de status completa (43 ou 54 bytes, conforme a
+        # família) já confirma que a senha foi aceita. Não usamos
+        # raise_for_ack() nesse caso: o primeiro byte de um status
+        # completo (zonas abertas 1-8) pode coincidentemente bater com um
+        # código de NACK sem ser erro nenhum. Só tratamos como ACK/NACK
+        # quando a resposta é curta (1-2 bytes), como a central realmente
+        # usa para confirmar/rejeitar comandos.
+        if len(response.content) in (43, 54):
+            return
+        raise_for_ack(response)
+
     def password_for_partition(self, partition: str | None) -> str:
         """Senha a usar para armar/desarmar uma partição específica.
 

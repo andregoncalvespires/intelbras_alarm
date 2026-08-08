@@ -85,17 +85,39 @@ usado anteriormente.
 7. Em **Configurar** na própria integração (Ajustes → Dispositivos e
    Serviços → Intelbras Alarm → Configurar) é possível ajustar, **sem
    remover e reconfigurar a integração do zero**:
-   - a **senha principal** (validada contra a própria central antes de
-     salvar, para não gravar uma senha errada e só descobrir depois);
+   - a **senha principal** — validada contra a própria central antes de
+     salvar (reaproveitando a conexão TCP persistente já aberta, sem
+     abrir uma segunda — ver ressalva abaixo), para não gravar uma senha
+     errada e só descobrir depois;
    - as **senhas por partição** (só 4010);
    - as opções de **exigir senha ao ativar/desativar**;
-   - as **zonas habilitadas por padrão**;
    - o **intervalo de consulta de status (polling)** — sugerido e padrão
      **0,25 s**, o mesmo valor usado pelo app oficial AMT Mobile.
 
    O endereço IP, a porta e o modelo detectado não são editáveis por ali
    de propósito — trocar de central é melhor tratado removendo e
    reconfigurando a integração do zero.
+
+   **"Zonas habilitadas por padrão" também não está editável ali**: esse
+   campo só tem efeito no momento em que as entidades de zona são criadas
+   pela primeira vez (`entity_registry_enabled_default`, um valor que o
+   Home Assistant só lê na primeira vez que grava a entidade no
+   registro — mudar isso depois, num reload, não reabilita/desabilita
+   nada em entidades que já existem). Deixar esse campo na tela de
+   "Configurar" pareceria funcionar (salva, recarrega, sem erro) mas não
+   teria efeito nenhum visível — por isso foi retirado de lá.
+
+   **Validação de senha reaproveita a conexão existente**: a primeira
+   versão desta tela abria uma **segunda conexão TCP** só para testar a
+   senha nova (a mesma função usada para detectar o modelo na
+   configuração inicial). Isso falhava sistematicamente, porque a central
+   só aceita **um cliente conectado por vez** — o mesmo motivo por trás do
+   problema com o app AMT Remoto documentado na seção "Comportamento em
+   reinícios". Corrigido: a validação agora monta um comando de consulta
+   de status com a senha candidata e o envia pela conexão persistente já
+   aberta do coordinator (`coordinator.async_validate_password()`) — o
+   protocolo ISECMobile leva a senha em cada frame, não na conexão TCP em
+   si, então isso funciona sem precisar de uma segunda conexão.
 
 ---
 

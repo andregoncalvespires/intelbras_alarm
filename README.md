@@ -42,8 +42,9 @@ Depois de configurada, em **Configurar** na própria integração (Ajustes →
 Dispositivos e Serviços → Intelbras Alarm → Configurar) dá pra ajustar,
 **sem remover e reconfigurar do zero**: a senha principal (validada contra
 a central antes de salvar), as senhas por partição (4010), as opções de
-exigir senha, as zonas habilitadas por padrão e o intervalo de polling. IP,
-porta e modelo não são editáveis ali — para isso, remova e reconfigure.
+exigir senha e o intervalo de polling. IP, porta, modelo e zonas
+habilitadas por padrão não são editáveis ali (esse último só funciona na
+configuração inicial) — para isso, remova e reconfigure.
 
 ---
 
