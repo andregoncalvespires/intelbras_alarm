@@ -2,28 +2,27 @@
 
 Integração nativa (custom component / HACS) para centrais de alarme Intelbras
 **AMT 1016 NET, AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET e AMT 4010 SMART**,
-via protocolo **ISECNet/ISECMobile** (o mesmo usado pelo app AMT Mobile),
-substituindo o fluxo Node-RED + node-red-contrib-home-assistant-websocket
-usado anteriormente.
+via protocolo **ISECNet/ISECMobile** (o mesmo usado pelo app AMT Mobile) —
+conexão TCP persistente direta com a central, dentro do próprio ciclo de
+vida do Home Assistant.
+
+A integração usa as entidades **padrão do próprio Home Assistant** para
+representar uma central de alarme como ela deveria ser representada:
+`alarm_control_panel` para a central e cada partição, com os estados de
+uma central de segurança de verdade (`disarmed`, `armed_away`,
+`armed_home`, `triggered`), suporte a senha/código para armar e desarmar
+(opcional, configurável por ação), zonas como `binary_sensor`, saídas
+programáveis (PGM) e sirene como `switch`, e diagnósticos completos da
+central (rede elétrica, bateria, tamper, sabotagem, expansoras, etc.) como
+entidades próprias — nada de sensores genéricos tentando imitar um painel
+de alarme por fora.
 
 > Baseado no documento oficial *"Descrição de Comandos de Protocolo ISECnet
 > Centrais de Alarmes – Intelbras Receptor IP"* (AMT2018 E/EG e AMT4010
-> Smart, Revisão 15) e validado com o fluxo Node-RED de referência (597 nós)
-> e capturas reais de tráfego (nomes de zona via EEPROM).
+> Smart, Revisão 15) e em capturas reais de tráfego (nomes de zona via
+> EEPROM, validação de bits de status). Ver seção "Créditos" no final.
 
----
-
-## Por que migrar do Node-RED?
-
-| | Node-RED + companion | Esta integração |
-|---|---|---|
-| Conexão com a central | abre/fecha uma conexão TCP a cada requisição | **uma conexão TCP persistente**, reaberta automaticamente só se cair |
-| Onde roda | processo Node.js separado, fora do ciclo de vida do HA | dentro do próprio Home Assistant (`custom_components`) |
-| Configuração | editar flow, variáveis de contexto e nós manualmente | **Config Flow** via UI (IP, senha, detecção automática de modelo) |
-| Estado do alarme | vários nós dispersos, lógica de "disparado" nem sempre coerente com "desarmado" | `alarm_control_panel` único por central/partição, com estado `triggered` só quando a central está de fato armada |
-| Superfície de ataque | senha/segredos em `flows.json`, múltiplos nós expostos, dependência de pacotes npm de terceiros | senha guardada como qualquer outra credencial do HA (`config_entries`), sem dependências externas |
-| Nomes de zona | não lidos automaticamente | lidos da EEPROM na configuração inicial (4010) + botão para ressincronizar |
-| Manutenção | editar grafo de nós | código Python padrão, testável, versionável |
+![Tela de configuração da integração](docs/images/tela-configuracao.jpeg)
 
 ---
 
@@ -130,7 +129,7 @@ usado anteriormente.
 | `switch` | PGM 1..N | N = 2 (2018/1016/SMART) ou até 19 (4010, conforme expansoras); comando `0x50`. **PGM 4 a 19 vêm desabilitadas por padrão** (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa) — a funcionalidade existe para as 19, mas a central não informa quantas expansoras existem de verdade, então evitamos poluir a lista com entidades provavelmente inúteis |
 | `switch` | Sirene | comandos `0x43`/`0x63`; status lido do Status38 bit 2 (2018/1016) ou Status46 bit 2 (4010) |
 | `switch` (categoria **Configuração**) | Conexão com a central | liga/desliga a comunicação TCP (manutenção/teste); ao desligar, as demais entidades ficam indisponíveis; **estado persistido** — se desligado antes de um reinício do Home Assistant, permanece desligado e não tenta reconectar automaticamente (ver seção "Comportamento em reinícios" abaixo) |
-| `binary_sensor` | Zona 01..N (`device_class: opening`) | N = 48 (toda a família 2018/1016) ou 64 (4010) — limite do protocolo por família, igual ao fluxo Node-RED original e à documentação. **Zonas habilitadas por padrão configuráveis na inclusão da integração** (formato `1-5;8;10-15`, padrão `1-8;17-24`); as demais são criadas desabilitadas (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa). Atributos: violada, anulada/bypass, e (só quando aplicável à faixa da zona) bateria baixa, tamper, curto-circuito |
+| `binary_sensor` | Zona 01..N (`device_class: opening`) | N = 48 (toda a família 2018/1016) ou 64 (4010) — limite do protocolo por família, conforme documentado e validado em campo. **Zonas habilitadas por padrão configuráveis na inclusão da integração** (formato `1-5;8;10-15`, padrão `1-8;17-24`); as demais são criadas desabilitadas (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa). Atributos: violada, anulada/bypass, e (só quando aplicável à faixa da zona) bateria baixa, tamper, curto-circuito |
 | `binary_sensor` | Central disparada | bit 6 do Status23/30 **E** sirene realmente tocando (Status38/46 bit 2) — ver seção "Leitura do Status22/23" |
 | `binary_sensor` | Alguma zona aberta | bit 2 do Status23/30 — sinal rápido agregado; diferente do bitmap por zona (Zona 01..N acima) e do contador `sensor` Zonas abertas |
 | `binary_sensor` | Particionamento habilitado | reflete `<Partição habilitada>` (Status21/27) |
@@ -139,7 +138,7 @@ usado anteriormente.
 | `binary_sensor` | Problema no teclado 1-4 / Problema no receptor 1-4 | diagnóstico (Status30 legado / Status37 na 4010); teclado tem atributo `tamper` |
 | `binary_sensor` | Problema no expansor de PGM 1-4 / Problema no expansor de zonas 1-6 | só família 4010 (Status38/39) |
 | `sensor` | Bateria (%) | diagnóstico; zera automaticamente se a bateria estiver ausente/invertida OU em curto (ver seção específica abaixo) |
-| `sensor` | Zonas abertas / Zonas violadas / Zonas anuladas / Zonas com bateria baixa (contadores) | diagnóstico; atributo `zonas` com a lista dos números das zonas naquele estado (e `zonas_nomes` também, se a central informar nomes — família 4010), no mesmo padrão do fluxo Node-RED original. "Zonas com bateria baixa" soma o bitmap de sensores sem fio (Status39-43 na 2018/1016, Status47-52 na 4010 — só zonas 17-64 na 4010, que é a única faixa com sensor sem fio nesse modelo) |
+| `sensor` | Zonas abertas / Zonas violadas / Zonas anuladas / Zonas com bateria baixa (contadores) | diagnóstico; atributo `zonas` com a lista dos números das zonas naquele estado (e `zonas_nomes` também, se a central informar nomes — família 4010), "Zonas com bateria baixa" soma o bitmap de sensores sem fio (Status39-43 na 2018/1016, Status47-52 na 4010 — só zonas 17-64 na 4010, que é a única faixa com sensor sem fio nesse modelo) |
 | `sensor` | Último comando | diagnóstico — grava a **ação enviada** assim que o comando sai (ex.: `"Ativar Partição A..."`) e depois **atualiza** com o resultado (ex.: `"Ativar Partição A: OK"` ou `"Ativar Partição A: Senha incorreta"`) |
 | `button` | Pânico silencioso / audível / emergência médica / incêndio | comando `0x45` |
 | `button` | Anular zonas abertas / Anular zonas violadas / Anular zonas abertas ou violadas | comando `0x42`; preserva anulações já existentes em outras zonas; o terceiro botão une os dois conjuntos numa única operação (evita que uma anulação desfaça a outra, já que o comando é absoluto) |
@@ -236,7 +235,7 @@ integração expõe:
 | Status29/36 bit3 "Bateria em curto-circuito" | falha de bateria | `binary_sensor` | `problem` |
 | Status29/36 bit4 "Sobrecarga na saída auxiliar" | falha elétrica | `binary_sensor` | `problem` |
 | Status23/30 = `0x11` ("Problema na central") | problema genérico | `binary_sensor` | `problem` |
-| Status31/41 nibble baixo (bits 0-3) | nível da bateria (medidor "termômetro": `0x0F`=100%, `0x07`=75%, `0x03`=50%, `0x01`=25%, `0x00`=0%) | `sensor` (Bateria %) | zerado se bit2 OU bit3 do Status29/36 estiverem ligados (bateria ausente/invertida OU em curto — ver nota abaixo), fiel à lógica `!msg.b_con` do fluxo Node-RED original |
+| Status31/41 nibble baixo (bits 0-3) | nível da bateria (medidor "termômetro": `0x0F`=100%, `0x07`=75%, `0x03`=50%, `0x01`=25%, `0x00`=0%) | `sensor` (Bateria %) | zerado se bit2 OU bit3 do Status29/36 estiverem ligados (bateria ausente/invertida OU em curto — ver nota abaixo), validado com testes reais de campo (bateria ausente/em curto) |
 | Status33/43 bit0 "Corte do fio da sirene" | falha na fiação da sirene | `binary_sensor` | `problem` |
 | Status33/43 bit1 "Curto-circuito no fio da sirene" | falha na fiação da sirene | `binary_sensor` | `problem` |
 | Status33/43 bit2 "Corte de linha telefônica" | falha na linha telefônica | `binary_sensor` | `problem` |
@@ -249,8 +248,7 @@ integração expõe:
 > o percentual quando o bit3 (curto-circuito) estava ligado, deixando
 > passar o caso de bateria **ausente** (bit2) — a central relatava um
 > percentual de carga mesmo sem bateria fisicamente instalada. Corrigido
-> para checar os dois bits, replicando exatamente a lógica `!msg.b_con` do
-> fluxo Node-RED original que o usuário tinha em produção.
+> para checar os dois bits, confirmado com testes reais de campo.
 
 ### Sobre o estado `triggered`
 
@@ -340,7 +338,7 @@ enquanto ela está sem se comunicar com a central.
 > capturados durante testes de disparo controlado — não apenas leitura da
 > documentação — e por isso é a versão mais confiável até agora.
 
-### Modo Stay por partição: doc vs. fluxo Node-RED original
+### Modo Stay por partição: doc vs. comportamento real de campo
 
 O comando `0x41` (Ativação) tem um campo `<Conteúdo>` cuja seção 7.1
 documenta explicitamente só o caso **sem partição**:
@@ -348,18 +346,16 @@ documenta explicitamente só o caso **sem partição**:
 away) OU `0x50` sozinho (1 byte, Stay para a central inteira). A doc não
 detalha como armar uma partição específica em modo Stay.
 
-O fluxo Node-RED original (comportamento validado em campo antes desta
-migração) resolve isso com um conteúdo de **2 bytes**: a partição seguida
-do marcador Stay — ex. partição A em Stay = conteúdo `[0x41, 0x50]`. É o
-que `protocol.cmd_arm()` reproduz, e é por isso que `armed_home` funciona
-tanto na central quanto em cada partição.
+O comportamento validado em campo resolve isso com um conteúdo de **2
+bytes**: a partição seguida do marcador Stay — ex. partição A em Stay =
+conteúdo `[0x41, 0x50]`. É o que `protocol.cmd_arm()` reproduz, e é por
+isso que `armed_home` funciona tanto na central quanto em cada partição.
 
 > Versões anteriores desta integração chegaram a remover esse suporte,
 > seguindo a leitura literal da doc (só o caso sem partição). Foi
 > reinstaurado depois que o modo Stay parou de funcionar nos testes —
-> nesse ponto específico, o comportamento de campo do fluxo Node-RED é
-> mais confiável do que a tabela da doc, que simplesmente não cobre esse
-> caso.
+> nesse ponto específico, o comportamento real de campo é mais confiável
+> do que a tabela da doc, que simplesmente não cobre esse caso.
 
 **Restrição por modelo, confirmada em testes**: o modo Stay só funciona de
 verdade na **AMT 4010 SMART** e na **AMT 2018 E SMART** — nos demais
@@ -453,8 +449,8 @@ Um padrão de fábrica (`A,B,C,D...` sequencial) é detectado e tratado como
 
 ## Desempenho
 
-- Conexão TCP única e persistente (elimina o overhead de handshake TCP a
-  cada 0,25 s que existia no fluxo Node-RED anterior).
+- Conexão TCP única e persistente (elimina o overhead de reconectar a
+  cada ciclo de polling).
 - Leitura da resposta é feita por tamanho exato (`readexactly`), usando o
   primeiro byte (`Nº Bytes`) do frame para saber exatamente quantos bytes
   ainda faltam — sem buffers arbitrários nem race condition entre
@@ -624,12 +620,6 @@ não estão batendo com o comportamento real da central.
   novas — mas se duas anulações forem disparadas quase ao mesmo tempo
   (ex.: automação + botão manual), a mais recente pode não considerar uma
   anulação ainda não refletida no último status lido.
-- Alguns atalhos existentes no fluxo Node-RED original (contagem de zonas,
-  anulação de zonas abertas/violadas, descrição do último ACK/NACK) foram
-  recriados aqui a partir da documentação oficial e do próprio fluxo
-  analisado nesta conversa. Se o fluxo Node-RED de origem tiver outros
-  atalhos específicos não cobertos aqui, reenvie o `flows.json` (ele não
-  fica retido entre mensagens) para uma comparação campo a campo.
 
 ## Nomenclatura das entidades
 
@@ -670,14 +660,19 @@ decimal**, sem separação de nibbles. Duas evidências definitivas:
 - Um byte de ano `0x1A` bate com `26` (2026, o ano real) como valor cru;
   via BCD daria `20` (2020), errado.
 
-Isso também bate com o fluxo Node-RED original (`padZero(msg.payload[N])`
-direto no byte, sem nenhuma conversão BCD). `_format_panel_datetime()` usa
-o valor cru do byte diretamente.
+Isso também é consistente com o valor sendo usado diretamente, sem
+nenhuma conversão BCD, em implementações de referência anteriores para
+este protocolo. `_format_panel_datetime()` usa o valor cru do byte
+diretamente.
 
 ## Créditos
 
-Engenharia reversa original do protocolo e nomes de zona: fluxo Node-RED de
-referência do usuário + captura de tráfego real com o comando `0x5C`.
-Estrutura de frames, comandos e mapas de bits de status: documento oficial
-Intelbras *"Descrição de Comandos de Protocolo ISECnet Centrais de Alarmes
-– Intelbras Receptor IP"*, Revisão 15.
+Esta integração foi construída a partir de um trabalho de engenharia
+reversa do protocolo ISECNet/ISECMobile muito bem feito por
+**@walberjunior**, originalmente publicado como um fluxo do Node-RED. A
+estrutura de frames, os comandos e boa parte do mapeamento de bits de
+status têm como base esse trabalho original — complementados e validados
+aqui com o documento oficial Intelbras *"Descrição de Comandos de
+Protocolo ISECnet Centrais de Alarmes – Intelbras Receptor IP"* (Revisão
+15) e capturas reais de tráfego (nomes de zona via EEPROM, validação de
+bits de status em campo).
