@@ -94,6 +94,21 @@ configuração inicial) — para isso, remova e reconfigure.
 
   ![Painel de controle da central AMT 4010 SMART armada em modo presente (Stay)](docs/images/controle-armado-em-casa-4010.jpeg)
 
+  > 📖 Como a entidade é o `alarm_control_panel` **padrão** do Home
+  > Assistant (não algo customizado desta integração), boa parte do que a
+  > [documentação oficial do Home Assistant sobre Alarm control panel](https://www.home-assistant.io/integrations/alarm_control_panel/)
+  > descreve já funciona sem nenhuma configuração extra: os gatilhos
+  > (`alarm_control_panel.armed`, `.disarmed`, `.triggered`), condições
+  > (`is_armed`, `is_triggered`) e ações (`alarm_arm_away`,
+  > `alarm_arm_home`, `alarm_disarm`) padrão do Home Assistant, incluindo
+  > o parâmetro `code` (a senha) nas ações. A página também traz exemplos
+  > prontos de automação (armar quando todos saem de casa, notificar em
+  > disparo, etc.) que funcionam direto com esta integração. Duas coisas
+  > da documentação que **não** se aplicam aqui: os modos "night",
+  > "vacation" e "custom bypass" (a central não expõe esses modos, só
+  > away/home/disarmed/triggered) e o atributo `changed_by` (o protocolo
+  > não informa quem alterou o estado, então não é preenchido).
+
 - **Zonas** (`binary_sensor`, uma por zona): aberta/fechada, com violação,
   anulação, bateria baixa, tamper e curto-circuito como atributos (quando
   aplicável àquela zona).

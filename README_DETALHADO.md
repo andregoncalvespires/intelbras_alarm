@@ -138,6 +138,15 @@ modelos/firmwares.
 
 ## Entidades criadas
 
+> 📖 As entidades `alarm_control_panel` usadas aqui são o tipo **padrão**
+> do Home Assistant, não algo customizado desta integração — a
+> [documentação oficial](https://www.home-assistant.io/integrations/alarm_control_panel/)
+> descreve o comportamento genérico (estados, o parâmetro `code`,
+> gatilhos/condições/ações padrão do domínio `alarm_control_panel`,
+> exemplos de automação). O que segue aqui é específico desta integração:
+> quais desses estados/recursos genéricos a central realmente entrega, e
+> como.
+
 | Plataforma | Entidade | Observações |
 |---|---|---|
 | `alarm_control_panel` | Central (dispositivo principal) | estados: `disarmed`, `armed_away`, `armed_home`, `triggered` — `armed_home` só disponível em AMT 4010 SMART e AMT 2018 E SMART (ver seção "Modo Stay por partição") |
@@ -164,6 +173,13 @@ modelos/firmwares.
 > Todos os `button` acima ficam **indisponíveis** quando a comunicação com
 > a central não está ativa (switch desligado, ou falha de conexão) — não
 > aparecem "prontos para uso" sem realmente conseguir entregar o comando.
+
+> Duas partes da documentação genérica do `alarm_control_panel` que
+> **não** se aplicam a esta integração: os modos `armed_night`,
+> `armed_vacation` e `armed_custom_bypass` (a central só expõe
+> away/home/disarmed/triggered — ver tabela acima) e o atributo
+> `changed_by` (o protocolo ISECNet não informa quem alterou o estado da
+> central, então não é preenchido).
 
 ### Serviço `intelbras_alarm.bypass_zone` — anular/reativar uma ou mais zonas
 
