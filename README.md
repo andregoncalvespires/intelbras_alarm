@@ -17,6 +17,15 @@ sabotagem, sirene, etc.) como entidades próprias.
 > decisões de design, histórico de correções): [README_DETALHADO.md](README_DETALHADO.md).
 > Este README é o resumo prático para instalar e usar.
 
+> ℹ️ **Modelos/firmwares realmente testados até agora**: AMT 1016 NET
+> (firmware 3.1) e AMT 4010 SMART (firmware 5.2). Os demais modelos
+> listados acima (AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET) seguem o
+> mesmo protocolo documentado e devem funcionar, mas ainda não foram
+> validados em hardware real — o suporte a eles não é bloqueado por isso,
+> é só para você ter uma referência caso relate algum problema. A lista
+> vai sendo atualizada conforme outros usuários testarem e relatarem
+> outros modelos/firmwares.
+
 ![Tela do dispositivo no Home Assistant, mostrando central, partições, PGMs e sirene](docs/images/tela-dispositivo.png)
 
 ---
@@ -37,7 +46,7 @@ adicione a URL deste repositório (categoria Integração) → instale
 ![Tela de configuração: IP, porta, senha e opções de exigir senha](docs/images/tela-configuracao.jpeg)
 
 1. **IP** e **porta** da central (padrão `9009`).
-2. **Senha** ISECMobile (a mesma do app AMT Mobile, 4 a 6 dígitos).
+2. **Senha** (a mesma do app AMT Mobile, 4 a 6 dígitos).
 3. Opcional: marque se quer que o Home Assistant **peça a senha** antes de
    ativar e/ou desativar pela interface (por padrão, nenhuma das duas —
    usa a senha configurada automaticamente, sem perguntar nada).
@@ -49,6 +58,12 @@ adicione a URL deste repositório (categoria Integração) → instale
 6. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
    diferentes por partição (A/B/C/D), se sua central tiver — opcional,
    deixe em branco para usar a senha principal em todas.
+
+   > ⚠️ **Central particionada com uma senha só**: há um bug conhecido da
+   > própria central (não da integração) onde desativar uma partição pode
+   > desativar outra junto, se as duas usarem a mesma senha geral.
+   > Detalhes e mitigação recomendada (5 senhas por partição, cadastradas
+   > na central) no [README_DETALHADO.md](README_DETALHADO.md#bug-conhecido-da-central-não-da-integração-senha-única-em-central-particionada).
 
    ![Tela complementar de senhas por partição, só para a AMT 4010 SMART](docs/images/tela-configuracao-4010-particoes.jpeg)
 
@@ -159,10 +174,7 @@ Sempre usa a senha configurada da central (não depende das opções de
 
 ## Créditos
 
-Esta integração foi construída a partir de um trabalho de engenharia
-reversa do protocolo ISECNet/ISECMobile muito bem feito por
-**@walberjunior**, originalmente publicado como um fluxo do Node-RED, e
-complementada com o documento oficial Intelbras *"Descrição de Comandos de
-Protocolo ISECnet Centrais de Alarmes – Intelbras Receptor IP"* (revisão
-15) e captura de tráfego real, validado em campo com centrais AMT 1016
-NET e AMT 4010 SMART.
+Esta integração foi construída a partir de trabalhos de engenharia
+reversa do protocolo ISECNet/ISECMobile muito bem feitos, originalmente
+publicado como um fluxo do Node-RED, e documentação disponível na
+internet.

@@ -22,6 +22,15 @@ de alarme por fora.
 > Smart, Revisão 15) e em capturas reais de tráfego (nomes de zona via
 > EEPROM, validação de bits de status). Ver seção "Créditos" no final.
 
+> ℹ️ **Modelos/firmwares realmente testados até agora**: AMT 1016 NET
+> (firmware 3.1) e AMT 4010 SMART (firmware 5.2). Os demais modelos
+> listados acima (AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET) seguem o
+> mesmo protocolo documentado e devem funcionar, mas ainda não foram
+> validados em hardware real — o suporte a eles não é bloqueado por isso,
+> é só para ter uma referência caso algum problema seja relatado. Esta
+> lista vai sendo atualizada conforme outros usuários testarem e
+> relatarem outros modelos/firmwares.
+
 ![Tela de configuração da integração](docs/images/tela-configuracao.jpeg)
 
 ---
@@ -43,7 +52,7 @@ de alarme por fora.
 2. Informe:
    - **Endereço IP** da central (módulo Ethernet/Wi-Fi já configurado com IP fixo é recomendado).
    - **Porta** (padrão `9009`, a mesma usada pelo AMT Mobile/Receptor IP — ajuste se a sua central usa outra).
-   - **Senha** (a mesma senha ISECMobile usada no app, 4 a 6 dígitos).
+   - **Senha** (a mesma do app AMT Mobile, 4 a 6 dígitos).
 3. A integração **detecta automaticamente o modelo** (envia `0x5A`; se a
    central responder "comando descontinuado" [`0xE5`], ela é uma AMT 4010 e
    o comando `0x5B` é usado) e define o número de zonas e partições
@@ -621,6 +630,31 @@ não estão batendo com o comportamento real da central.
   (ex.: automação + botão manual), a mais recente pode não considerar uma
   anulação ainda não refletida no último status lido.
 
+### Bug conhecido da central (não da integração): senha única em central particionada
+
+Relatado em campo: usando **apenas uma senha geral** numa central
+**particionada**, com duas ou mais partições ativadas ao mesmo tempo
+(ex.: partição A e partição B), enviar o comando para desativar **só uma
+delas** (ex.: só a B) pode fazer a central desativar a outra partição (A)
+junto, sem nenhum comando ter sido enviado para ela. A integração envia
+exatamente o comando de desativar aquela partição específica, conforme a
+documentação do protocolo — o comportamento observado é da própria
+central, não da lógica de comando aqui.
+
+**Mitigação recomendada**: cadastrar senhas específicas por partição
+diretamente **na central** (pelo teclado ou app oficial), e depois
+informar essas mesmas senhas na tela "Senhas por partição" desta
+integração (disponível para a AMT 4010 SMART — ver seção de
+Configuração), para que cada comando de ativar/desativar use a senha
+daquela partição especificamente, em vez da senha geral. Sugestão de 5
+senhas a cadastrar na central:
+
+- **Senha 1**: ativa/desativa **todas** as partições + bypass
+- **Senha 2**: ativa/desativa **só a partição A** + bypass
+- **Senha 3**: ativa/desativa **só a partição B** + bypass
+- **Senha 4**: ativa/desativa **só a partição C** + bypass
+- **Senha 5**: ativa/desativa **só a partição D** + bypass
+
 ## Nomenclatura das entidades
 
 O nome de cada entidade é **prefixado pelo nome do dispositivo** (ex.:
@@ -667,12 +701,7 @@ diretamente.
 
 ## Créditos
 
-Esta integração foi construída a partir de um trabalho de engenharia
-reversa do protocolo ISECNet/ISECMobile muito bem feito por
-**@walberjunior**, originalmente publicado como um fluxo do Node-RED. A
-estrutura de frames, os comandos e boa parte do mapeamento de bits de
-status têm como base esse trabalho original — complementados e validados
-aqui com o documento oficial Intelbras *"Descrição de Comandos de
-Protocolo ISECnet Centrais de Alarmes – Intelbras Receptor IP"* (Revisão
-15) e capturas reais de tráfego (nomes de zona via EEPROM, validação de
-bits de status em campo).
+Esta integração foi construída a partir de trabalhos de engenharia
+reversa do protocolo ISECNet/ISECMobile muito bem feitos, originalmente
+publicado como um fluxo do Node-RED, e documentação disponível na
+internet.
