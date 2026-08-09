@@ -17,14 +17,19 @@ sabotagem, sirene, etc.) como entidades próprias.
 > decisões de design, histórico de correções): [README_DETALHADO.md](README_DETALHADO.md).
 > Este README é o resumo prático para instalar e usar.
 
-> ℹ️ **Modelos/firmwares realmente testados até agora**: AMT 1016 NET
-> (firmware 3.1) e AMT 4010 SMART (firmware 5.2). Os demais modelos
-> listados acima (AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET) seguem o
-> mesmo protocolo documentado e devem funcionar, mas ainda não foram
-> validados em hardware real — o suporte a eles não é bloqueado por isso,
-> é só para você ter uma referência caso relate algum problema. A lista
-> vai sendo atualizada conforme outros usuários testarem e relatarem
-> outros modelos/firmwares.
+**ℹ️ Modelos/firmwares realmente testados até agora:**
+
+| Modelo | Firmware | Observação |
+|---|---|---|
+| AMT 1016 NET | 3.1 | — |
+| AMT 2018 E/EG | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. Nesses casos, a integração usa valor padrão (zero/desligado) para os campos que não vierem naquela leitura específica — o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo, então o efeito prático costuma ser uma oscilação rápida e passageira, não uma falha permanente. |
+| AMT 4010 SMART | 5.2 | — |
+
+Os demais modelos suportados pelo protocolo (AMT 2018 E SMART, AMN 24
+NET) seguem a mesma estrutura, mas ainda não foram validados em hardware
+real — o suporte a eles não é bloqueado por isso, é só para você ter uma
+referência caso relate algum problema. Esta tabela vai sendo atualizada
+conforme outros usuários testarem e relatarem outros modelos/firmwares.
 
 ![Tela do dispositivo no Home Assistant, mostrando central, partições, PGMs e sirene](docs/images/tela-dispositivo.png)
 
