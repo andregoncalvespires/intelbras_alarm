@@ -431,6 +431,75 @@ leitura ou escrita falhar (timeout, reset, etc.), o socket é fechado e a
 **próxima** requisição reabre a conexão automaticamente — nunca há
 desconexão proposital a cada ciclo de polling.
 
+### Dois timeouts diferentes, para dois problemas diferentes
+
+Até uma versão anterior, um único valor (8s, herdado do item 5 da
+documentação ISECNet) fazia dois papéis ao mesmo tempo — e esses dois
+papéis fazem mais sentido com números diferentes:
+
+- **`DEFAULT_REQUEST_TIMEOUT` (3s por padrão)**: quanto tempo esperar por
+  UMA tentativa — conectar, ou receber a resposta de UM comando/consulta
+  já na conexão estabelecida. Os 8s originais foram pensados pra um
+  cenário de conexão nova a cada requisição (como no fluxo original de
+  referência); numa conexão já persistente e aberta, a central deveria
+  responder bem mais rápido, então um timeout menor aqui significa
+  feedback mais rápido pro usuário quando um comando falha, e reconexão
+  mais ágil numa queda real (antes, cada tentativa de reconectar podia
+  levar até 8s só pra desistir).
+- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` (8s por padrão)**: quanto tempo
+  de **silêncio acumulado** (sem nenhuma consulta de status bem-sucedida)
+  a integração tolera antes de marcar as entidades como indisponíveis de
+  verdade. Esse número mais generoso evita que um soluço isolado da
+  central (ex.: o bug do firmware 6.2 documentado acima, ou qualquer
+  outra instabilidade passageira) derrube a disponibilidade das entidades
+  por causa de uma única consulta que falhou — só depois de repetidas
+  tentativas malsucedidas dentro dessa janela é que a indisponibilidade é
+  declarada de verdade.
+
+**Importante — essa tolerância só vale pra consulta de status periódica,
+nunca para comandos reais** (armar, desarmar, PGM, sirene, pânico,
+bypass). Um comando é um pedido explícito do usuário; ele sempre falha de
+forma imediata e visível (com log em nível `ERROR`) se não conseguir uma
+resposta dentro do `DEFAULT_REQUEST_TIMEOUT` — não faria sentido "tolerar
+silenciosamente" a falha de uma ação que o usuário está esperando ver
+acontecer.
+
+O ciclo de tolerância da consulta de status (`coordinator._handle_poll_failure`)
+funciona assim:
+
+| Situação | O que acontece | Nível de log |
+|---|---|---|
+| Nunca houve nenhuma consulta bem-sucedida ainda | Falha imediata, entidades ficam indisponíveis | `ERROR` |
+| Falha isolada, dentro da janela de tolerância (< 8s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
+| Silêncio acumulado ultrapassa a janela de tolerância (≥ 8s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR` |
+
+### Diagnóstico de resposta com tamanho inesperado
+
+Cada família tem um tamanho de resposta de status fixo e conhecido
+(`FAMILY_STATUS_LEN`: 43 bytes para 2018/1016, 54 para a 4010). Se a
+central responder com um tamanho diferente do esperado para a família
+detectada — como o bug do firmware 6.2 da AMT 4010 SMART documentado
+acima —, a integração continua funcionando normalmente (a leitura de
+campos já é defensiva, usa valor padrão pros bytes ausentes), mas agora
+registra um `WARNING` no log com o tamanho recebido, o esperado, e o
+conteúdo bruto em hex — útil pra correlacionar com o comportamento
+observado na UI sem precisar ativar debug.
+
+### Mensagens de erro com mais contexto
+
+`PanelClient.send_command()` aceita um parâmetro opcional `context` (ex.:
+`"Ativar Partição A"`, `"consulta de status"`) usado só para enriquecer
+as mensagens de erro e os logs — toda chamada relevante do coordinator já
+passa esse rótulo. Além disso, a leitura da resposta é feita em duas
+etapas (primeiro o byte de cabeçalho "Nº de Bytes", depois o resto) — se o
+timeout estourar na segunda etapa, a mensagem de erro já informa quantos
+bytes a central chegou a **prometer** no cabeçalho, mesmo sem saber
+quantos do "resto" chegaram de fato (isso exigiria um loop de leitura
+manual próprio, que não implementamos por ora). Se a conexão for
+encerrada pela central no meio da resposta (`IncompleteReadError`, um
+cenário diferente de timeout), a mensagem já inclui os bytes parciais
+recebidos em hex, não só a contagem.
+
 ### Detecção automática de modelo
 1. Envia `0x5A` (status parcial, famílias 2018/1016/SMART/AMN24).
 2. Se a resposta for `NACK 0xE5` ("comando descontinuado" — documentado na

@@ -9,7 +9,7 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .connection_state import async_load_connection_enabled
-from .const import CONF_MODEL, CONF_PARTITION_PASSWORDS, CONF_PASSWORD, DEFAULT_TIMEOUT_ETHERNET, DOMAIN
+from .const import CONF_MODEL, CONF_PARTITION_PASSWORDS, CONF_PASSWORD, DEFAULT_REQUEST_TIMEOUT, DOMAIN
 from .coordinator import IntelbrasAlarmCoordinator
 from .panel_client import PanelClient
 
@@ -40,7 +40,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     client = PanelClient(
         entry.data["host"],
         entry.data["port"],
-        timeout=DEFAULT_TIMEOUT_ETHERNET,
+        timeout=DEFAULT_REQUEST_TIMEOUT,
         enabled=connection_enabled,
     )
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -13,12 +14,14 @@ from .const import (
     ACK_OK,
     CMD_EEPROM_READ,
     CONF_ENABLED_ZONES,
+    DEFAULT_CONNECTION_HEALTH_TIMEOUT,
     DEFAULT_ENABLED_ZONES_SPEC,
-    DEFAULT_TIMEOUT_ETHERNET,
+    DEFAULT_REQUEST_TIMEOUT,
     FAMILY_2018,
     FAMILY_4010,
     FAMILY_MAX_ZONES,
     FAMILY_STATUS_CMD,
+    FAMILY_STATUS_LEN,
     InvalidZoneSpec,
     MODEL_TABLE,
     MODEL_UNKNOWN,
@@ -92,6 +95,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.last_command_action: str | None = None  # finalidade/nome, ex. "Ativar Partição A"
         self.last_command_frame_hex: str | None = None  # bytes do comando enviado
         self.last_command_response_hex: str | None = None  # bytes da resposta a esse comando
+
+        # Marca de tempo (monotônica, imune a ajuste de relógio do sistema)
+        # da última consulta de status bem-sucedida — usada só para decidir
+        # se uma falha de consulta é "tolerada" (dentro da janela de saúde
+        # da conexão) ou se já vira indisponibilidade de verdade. Ver
+        # _async_update_data(). None só antes da primeira consulta bem-
+        # sucedida desde que a integração carregou.
+        self._last_poll_success_monotonic: float | None = None
 
         # Zonas que nascem habilitadas por padrão no Home Assistant,
         # configurável pelo usuário na inclusão da integração (formato
@@ -192,7 +203,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         estiver disponível.
         """
         frame = _build_status_frame(password, self.family)
-        response = await self.client.send_command(frame)
+        response = await self.client.send_command(frame, context="validar nova senha")
         # Uma resposta de status completa (43 ou 54 bytes, conforme a
         # família) já confirma que a senha foi aceita. Não usamos
         # raise_for_ack() nesse caso: o primeiro byte de um status
@@ -219,18 +230,49 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     async def _async_update_data(self) -> PanelStatus:
         try:
             response = await self.client.send_command(
-                _build_status_frame(self._password, self.family)
+                _build_status_frame(self._password, self.family), context="consulta de status"
             )
-        except PanelConnectionError as err:
+            if not response.valid_checksum:
+                raise UpdateFailed("Checksum inválido na resposta de status")
+            status = parse_status(response.content, self.family)
+        except (PanelConnectionError, UpdateFailed, IndexError, ValueError) as err:
+            self._handle_poll_failure(err)
+            # _handle_poll_failure() levanta UpdateFailed se a falha não for
+            # tolerável (ver docstring dela) — se chegou até aqui, a falha
+            # foi tolerada: mantém e devolve o último dado bom conhecido,
+            # sem marcar as entidades como indisponíveis por causa de um
+            # soluço isolado e passageiro da central.
+            if self.data is not None:
+                return self.data
+            # Nunca teve um dado bom — não há o que "tolerar", teria que
+            # inventar um status vazio. _handle_poll_failure() já deveria
+            # ter levantado UpdateFailed nesse caso (ver lá), mas por
+            # segurança levanta aqui também.
             raise UpdateFailed(str(err)) from err
 
-        if not response.valid_checksum:
-            raise UpdateFailed("Checksum inválido na resposta de status")
+        # Sucesso: reseta a marca de tempo de "última consulta boa", usada
+        # pela lógica de tolerância acima.
+        self._last_poll_success_monotonic = time.monotonic()
 
-        try:
-            status = parse_status(response.content, self.family)
-        except (IndexError, ValueError) as err:
-            raise UpdateFailed(f"Falha ao interpretar status: {err}") from err
+        # Scenario A (discutido com o usuário): a central deveria sempre
+        # responder com o tamanho fixo esperado para a família detectada.
+        # Um firmware com bug (ex.: AMT 4010 SMART fw 6.2, documentado no
+        # README) pode ocasionalmente mandar uma resposta menor — isso não
+        # quebra a leitura (protocol.py já é defensivo, usa 0/False pros
+        # campos ausentes), mas é um sinal de saúde da central que vale
+        # registrar, mesmo sem impedir o funcionamento normal.
+        expected_len = FAMILY_STATUS_LEN.get(self.family)
+        if expected_len is not None and len(response.content) != expected_len:
+            _LOGGER.warning(
+                "Resposta de status com tamanho inesperado para %s: recebidos %d "
+                "bytes, esperados %d — a central pode ter um firmware com "
+                "comportamento incorreto (ver README, seção de modelos testados). "
+                "Conteúdo recebido: %s",
+                self.family,
+                len(response.content),
+                expected_len,
+                response.content.hex(" ").upper(),
+            )
 
         # Log de diagnóstico do status bruto recebido a cada polling — é o
         # que permite comparar, byte a byte, o comportamento real da
@@ -250,6 +292,52 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.last_status_raw = response.content.hex(" ").upper()
 
         return status
+
+    def _handle_poll_failure(self, err: Exception) -> None:
+        """Decide se uma falha de CONSULTA DE STATUS é tolerada ou definitiva.
+
+        Só se aplica à consulta de status periódica — comandos reais
+        (armar, desarmar, PGM, etc.) nunca passam por aqui, sempre falham
+        de forma imediata e visível (ver ``_send_and_check``), porque são
+        ações que o usuário pediu explicitamente e precisam de feedback
+        rápido, não silêncio tolerado.
+
+        Tolerância: se o tempo desde a última consulta bem-sucedida ainda
+        está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (8s por
+        padrão), a falha vira só um aviso no log — as entidades continuam
+        "disponíveis", mostrando o último dado bom conhecido, e a próxima
+        tentativa (0,25s depois, por padrão) tenta de novo normalmente.
+        Isso evita marcar tudo como indisponível por causa de um soluço
+        isolado (ex.: o bug do firmware 6.2 documentado no README).
+
+        Levanta ``UpdateFailed`` (marcando as entidades como indisponíveis
+        de verdade) quando: nunca houve nenhuma consulta bem-sucedida
+        ainda, ou o silêncio acumulado já ultrapassou a janela de
+        tolerância — nesse ponto, o problema não parece mais passageiro.
+        """
+        now = time.monotonic()
+        if self._last_poll_success_monotonic is None:
+            _LOGGER.error("Falha na consulta de status (nenhuma comunicação bem-sucedida ainda): %s", err)
+            raise UpdateFailed(str(err)) from err
+
+        elapsed = now - self._last_poll_success_monotonic
+        if elapsed >= DEFAULT_CONNECTION_HEALTH_TIMEOUT:
+            _LOGGER.error(
+                "Falha na consulta de status: %s (sem comunicação bem-sucedida há %.1fs, "
+                "acima da tolerância de %ds — marcando como indisponível)",
+                err,
+                elapsed,
+                DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+            )
+            raise UpdateFailed(str(err)) from err
+
+        _LOGGER.warning(
+            "Falha isolada na consulta de status (tolerada, %.1fs desde a última com "
+            "sucesso, dentro do limite de %ds): %s",
+            elapsed,
+            DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+            err,
+        )
 
     # ------------------------------------------------------------------
     # Comandos de alto nível usados pelas entidades
@@ -403,7 +491,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             self.last_command_frame_hex = frame.hex(" ").upper()
             self.async_update_listeners()
         try:
-            response = await self.client.send_command(frame)
+            response = await self.client.send_command(frame, context=action_label)
         except PanelConnectionError as err:
             self.last_command_result = f"{action_label + ': ' if action_label else ''}{err}"
             if action_label:
@@ -412,7 +500,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 # enganosa de que ele pertence a este comando que falhou.
                 self.last_command_response_hex = None
             self.async_update_listeners()
-            _LOGGER.debug("comando falhou (erro de conexão): ação=%s erro=%s", action_label, err)
+            # ERROR (não WARNING/DEBUG): comandos reais são pedidos
+            # explícitos do usuário, e essa falha NÃO passa pela tolerância
+            # usada na consulta de status periódica (ver
+            # _handle_poll_failure) — é sempre imediata e definitiva, então
+            # merece visibilidade alta no log.
+            _LOGGER.error("Comando falhou (erro de conexão): ação=%s erro=%s", action_label, err)
             raise UpdateFailed(str(err)) from err
         result_desc = _describe_response(response)
         self.last_command_result = f"{action_label + ': ' if action_label else ''}{result_desc}"
@@ -450,7 +543,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             address = ZONE_NAME_BASE_ADDRESS + (zone - 1) * ZONE_NAME_RECORD_LEN
             frame = cmd_eeprom_read(self._password, address, length)
             try:
-                response = await self.client.send_command(frame)
+                response = await self.client.send_command(frame, context=f"ler nomes de zona {zone}")
             except PanelConnectionError as err:
                 raise UpdateFailed(str(err)) from err
             if not response.content or response.content[0] in (0xE0, 0xE1, 0xE2, 0xE5):
@@ -513,11 +606,11 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
     from .protocol import build_command, parse_status_2018, parse_status_4010
     from .const import CMD_STATUS_FULL, CMD_STATUS_PARTIAL
 
-    client = PanelClient(host, port, timeout=DEFAULT_TIMEOUT_ETHERNET)
+    client = PanelClient(host, port, timeout=DEFAULT_REQUEST_TIMEOUT)
     try:
         await client.connect()
         try:
-            response = await client.send_command(build_command(password, CMD_STATUS_PARTIAL))
+            response = await client.send_command(build_command(password, CMD_STATUS_PARTIAL), context="detecção de modelo")
         except PanelConnectionError as err:
             raise UpdateFailed(str(err)) from err
 
@@ -527,7 +620,7 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
                 raise_for_ack(response)
             except NackError:
                 pass
-            response = await client.send_command(build_command(password, CMD_STATUS_FULL))
+            response = await client.send_command(build_command(password, CMD_STATUS_FULL), context="detecção de modelo (4010)")
             status = parse_status_4010(response.content)
             return status.model_key, status.model_name, FAMILY_4010
 
@@ -535,7 +628,7 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
         if status.model_key == MODEL_UNKNOWN:
             # Byte de modelo não reconhecido nesta família: tenta 4010 como
             # segunda hipótese antes de desistir.
-            response2 = await client.send_command(build_command(password, CMD_STATUS_FULL))
+            response2 = await client.send_command(build_command(password, CMD_STATUS_FULL), context="detecção de modelo (segunda tentativa)")
             status2 = parse_status_4010(response2.content)
             if status2.model_key != MODEL_UNKNOWN:
                 return status2.model_key, status2.model_name, FAMILY_4010

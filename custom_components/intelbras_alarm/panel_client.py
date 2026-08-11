@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from .const import DEFAULT_TIMEOUT_ETHERNET
+from .const import DEFAULT_REQUEST_TIMEOUT
 from .protocol import ParsedFrame, ProtocolError, parse_frame
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ class PanelClient:
         self,
         host: str,
         port: int,
-        timeout: float = DEFAULT_TIMEOUT_ETHERNET,
+        timeout: float = DEFAULT_REQUEST_TIMEOUT,
         enabled: bool = True,
     ) -> None:
         self._host = host
@@ -87,14 +87,20 @@ class PanelClient:
         self._reader = None
         self._writer = None
 
-    async def send_command(self, frame: bytes) -> ParsedFrame:
+    async def send_command(self, frame: bytes, context: str | None = None) -> ParsedFrame:
         """Envia um frame já pronto e aguarda a resposta correspondente.
 
         Reabre a conexão automaticamente se ela tiver caído; nunca fecha e
         reabre a cada requisição enquanto a conexão estiver saudável.
+
+        ``context`` é só um rótulo textual opcional (ex.: "Ativar Partição
+        A", "consulta de status") usado para enriquecer as mensagens de
+        erro e os logs — não afeta o comportamento do envio em si.
         """
         if not self._enabled:
             raise PanelConnectionError("Comunicação com a central está desativada")
+
+        label = f" [{context}]" if context else ""
 
         async with self._lock:
             if not self._connected:
@@ -108,38 +114,57 @@ class PanelClient:
                 # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir
                 # dele sabemos exatamente quantos bytes ainda faltam ler
                 # (comando + conteúdo + checksum), evitando misturar respostas.
-                header = await asyncio.wait_for(
-                    self._reader.readexactly(1), timeout=self._timeout
-                )
+                # A leitura é feita em duas etapas (cabeçalho, depois o
+                # resto) de propósito: se o timeout estourar na segunda
+                # etapa, pelo menos sabemos quantos bytes a central chegou
+                # a PROMETER (o cabeçalho já foi lido) — informação melhor
+                # que nada para o log, mesmo sem saber quantos bytes do
+                # "resto" chegaram de fato (isso exigiria um loop de
+                # leitura manual, que não temos hoje).
+                try:
+                    header = await asyncio.wait_for(
+                        self._reader.readexactly(1), timeout=self._timeout
+                    )
+                except asyncio.TimeoutError as err:
+                    await self._close_locked()
+                    raise PanelConnectionError(
+                        f"Falha de comunicação com a central{label}: tempo limite "
+                        f"excedido ({self._timeout}s) — nenhum byte de resposta "
+                        f"chegou (nem o cabeçalho)"
+                    ) from err
+
                 num_bytes = header[0]
-                remainder = await asyncio.wait_for(
-                    self._reader.readexactly(num_bytes + 1), timeout=self._timeout
-                )
+                try:
+                    remainder = await asyncio.wait_for(
+                        self._reader.readexactly(num_bytes + 1), timeout=self._timeout
+                    )
+                except asyncio.TimeoutError as err:
+                    await self._close_locked()
+                    raise PanelConnectionError(
+                        f"Falha de comunicação com a central{label}: tempo limite "
+                        f"excedido ({self._timeout}s) — central prometeu "
+                        f"{num_bytes + 1} bytes após o cabeçalho, mas não terminou "
+                        f"de enviar a tempo"
+                    ) from err
                 raw = header + remainder
-            except asyncio.TimeoutError as err:
-                await self._close_locked()
-                raise PanelConnectionError(
-                    f"Falha de comunicação com a central: tempo limite excedido "
-                    f"({self._timeout}s) aguardando resposta"
-                ) from err
             except asyncio.IncompleteReadError as err:
                 await self._close_locked()
                 raise PanelConnectionError(
-                    "Falha de comunicação com a central: conexão encerrada antes da "
-                    f"resposta completa (esperado {err.expected}, recebido "
-                    f"{len(err.partial)} bytes)"
+                    f"Falha de comunicação com a central{label}: conexão encerrada "
+                    f"antes da resposta completa (esperado {err.expected}, recebido "
+                    f"{len(err.partial)} bytes: {err.partial.hex(' ').upper()})"
                 ) from err
             except OSError as err:
                 await self._close_locked()
                 detail = str(err) or err.__class__.__name__
                 raise PanelConnectionError(
-                    f"Falha de comunicação com a central: {detail}"
+                    f"Falha de comunicação com a central{label}: {detail}"
                 ) from err
 
         try:
             return parse_frame(raw)
         except ProtocolError as err:
-            raise PanelConnectionError(str(err)) from err
+            raise PanelConnectionError(f"{err}{label}") from err
 
     async def _connect_locked(self) -> None:
         try:

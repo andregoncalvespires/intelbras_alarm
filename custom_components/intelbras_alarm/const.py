@@ -23,7 +23,26 @@ DEFAULT_PORT = 9009
 DEFAULT_POLLING_INTERVAL = 0.25  # segundos, sugerido pela Intelbras/AMT Mobile
 MIN_POLLING_INTERVAL = 0.15
 MAX_POLLING_INTERVAL = 10.0
-DEFAULT_TIMEOUT_ETHERNET = 8  # segundos, conforme item 5 da documentação ISECNet
+# Timeout POR TENTATIVA (conectar OU esperar resposta a UM comando/consulta
+# já na conexão estabelecida). Antes desta revisão, os 8s do item 5 da
+# documentação ISECNet eram usados aqui — mas esse valor foi pensado para
+# um cenário de conexão nova a cada requisição (como no fluxo Node-RED
+# original), não para uma conexão persistente já aberta, onde a central
+# deveria responder bem mais rápido. Um timeout de 8s por TENTATIVA fazia
+# o usuário esperar até 8s por feedback de um único comando, e a
+# reconexão em caso de queda real também demorava até 8s por tentativa.
+DEFAULT_REQUEST_TIMEOUT = 3  # segundos
+# Timeout de TOLERÂNCIA ACUMULADA: usado só pela consulta de status
+# (nunca por comandos reais, que sempre falham rápido e visivelmente — ver
+# coordinator.py). Se uma consulta de status isolada falhar mas o tempo
+# desde a última consulta bem-sucedida ainda estiver dentro deste limite,
+# a falha é tolerada silenciosamente (fica só um aviso no log; as
+# entidades continuam "disponíveis", mostrando o último dado bom
+# conhecido) — evita marcar tudo como indisponível por causa de um único
+# soluço passageiro da central (ex.: o bug do firmware 6.2 documentado no
+# README). Só depois que o silêncio ultrapassa este limite é que a falha
+# vira uma indisponibilidade de verdade.
+DEFAULT_CONNECTION_HEALTH_TIMEOUT = 8  # segundos
 DEFAULT_CODE_REQUIRED_ARM = False
 DEFAULT_CODE_REQUIRED_DISARM = False
 # Formato: intervalos e/ou números individuais separados por ponto e
