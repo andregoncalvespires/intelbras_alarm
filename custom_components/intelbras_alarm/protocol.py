@@ -526,9 +526,11 @@ def parse_status_4010(content: bytes) -> PanelStatus:
     activated = bool((status30 >> 3) & 0x01)
     zone_open_flag = bool((status30 >> 2) & 0x01)
     problem = bool(status30 & 0x01) and bool((status30 >> 4) & 0x01)
-    # Sirene: bit 2 do Status46 (NÃO bit 1 do Status30 — corrigido, mesmo
-    # raciocínio do parse_status_2018).
-    siren_on = bool((status46 >> 2) & 0x01)
+    # Sirene: bit 3 do Status46 (não bit 2, como documentação e uma
+    # correção anterior indicavam incorretamente — confirmado pelo
+    # usuário especificamente para a família 4010; a 2018/1016 continua
+    # usando o bit 2 do Status38, que está correto e não muda).
+    siren_on = bool((status46 >> 3) & 0x01)
     # "Disparo real": mesmo raciocínio do parse_status_2018 — o bit 6 do
     # Status30 fica latched até a mesma partição ser reativada; combinado
     # com a sirene realmente tocando para não confundir memória antiga com
