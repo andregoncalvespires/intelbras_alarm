@@ -109,6 +109,16 @@ class PanelClient:
             assert self._writer is not None
             assert self._reader is not None
             try:
+                # Log só AQUI (depois de conseguir a vez na fila do lock),
+                # de propósito — reflete o momento em que o comando
+                # realmente saiu pela conexão, não o momento em que quem
+                # chamou send_command() decidiu mandar. Se o log fosse
+                # colocado antes do "async with self._lock", uma requisição
+                # que precisasse esperar (ex.: uma consulta de status já em
+                # andamento) apareceria no log como enviada muito antes do
+                # que aconteceu de verdade — gerando sequências
+                # aparentemente fora de ordem (relatado pelo usuário).
+                _LOGGER.debug("enviando comando%s: frame=%s", label, frame.hex(" ").upper())
                 self._writer.write(frame)
                 await self._writer.drain()
                 # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir

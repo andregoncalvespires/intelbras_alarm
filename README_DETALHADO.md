@@ -469,9 +469,20 @@ funciona assim:
 
 | Situação | O que acontece | Nível de log |
 |---|---|---|
-| Nunca houve nenhuma consulta bem-sucedida ainda | Falha imediata, entidades ficam indisponíveis | `ERROR` |
+| Switch "Conexão com a central" desligado | Nenhuma tentativa de comunicação é feita; entidades ficam indisponíveis | `INFO`, só na transição para esse estado (nunca se repete enquanto durar) |
+| Nunca houve nenhuma consulta bem-sucedida ainda | Falha imediata, entidades ficam indisponíveis | `ERROR`, só na primeira vez (não se repete a cada ciclo) |
 | Falha isolada, dentro da janela de tolerância (< 8s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
-| Silêncio acumulado ultrapassa a janela de tolerância (≥ 8s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR` |
+| Silêncio acumulado ultrapassa a janela de tolerância (≥ 8s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR`, só na transição (não se repete a cada ciclo enquanto continuar falhando) |
+| Comunicação volta a funcionar depois de uma falha definitiva | Entidades voltam a ficar disponíveis | `WARNING`, avisando quanto tempo ficou indisponível |
+
+**Todas as linhas de `ERROR`/`INFO` de falha acima só aparecem uma vez por
+"episódio" de indisponibilidade** — enquanto a causa persistir (switch
+desligado, central offline, etc.), os ciclos de polling seguintes
+continuam marcando as entidades como indisponíveis normalmente, mas sem
+gerar log novo a cada 0,25s. Essa supressão foi adicionada depois de um
+caso real em produção (ver aviso no topo da seção "Diagnóstico" mais
+abaixo) em que a ausência dela gerou 12 milhões de linhas de log e 16GB
+de banco de dados.
 
 ### Diagnóstico de resposta com tamanho inesperado
 
@@ -657,6 +668,27 @@ clique no ícone de engrenagem/`{}` ("Detalhes"), e olhe a seção
 "Atributos".
 
 ## Diagnóstico (logs de depuração)
+
+> ### ⚠️ Bug crítico corrigido (v1.5.0) — crescimento descontrolado do banco do `recorder`
+>
+> Antes desta versão, deixar o switch **"Conexão com a central" desligado**
+> (ou a central genuinamente offline) por um período longo gerava uma
+> linha de log `ERROR` **a cada ciclo de polling** (0,25s por padrão),
+> indefinidamente, sem nenhuma supressão. Caso real relatado em produção:
+> switch desligado por ~35 dias → **12 milhões de linhas de log
+> idênticas** → banco do `recorder` chegando a **16GB**, causado
+> inteiramente por esta integração.
+>
+> Corrigido: quando o switch está desligado, a integração **não tenta
+> nenhuma comunicação** com a central (nem abre socket) e loga a
+> transição para esse estado **uma única vez** — silêncio completo
+> enquanto permanecer desligado. O mesmo vale para qualquer falha de
+> conexão genuína com o switch ligado (central offline, cabo rompido,
+> etc.): a falha vira `ERROR` só na transição para "indisponível", nunca
+> se repete enquanto durar, e quando a comunicação volta a funcionar
+> aparece um `WARNING` avisando (com o tempo que ficou fora do ar). Se
+> você tiver uma versão anterior instalada e notar o banco do Home
+> Assistant crescendo rápido, atualize para esta versão o quanto antes.
 
 Para uma investigação mais profunda (ex.: acompanhar a evolução do status
 em tempo real durante um teste), ative o log em nível `debug` desta

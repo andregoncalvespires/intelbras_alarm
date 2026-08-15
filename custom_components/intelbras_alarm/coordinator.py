@@ -103,6 +103,19 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # _async_update_data(). None só antes da primeira consulta bem-
         # sucedida desde que a integração carregou.
         self._last_poll_success_monotonic: float | None = None
+        # Evita logar a MESMA falha repetidamente a cada ciclo de polling
+        # (0,25s por padrão) enquanto ela persistir — sem isso, deixar a
+        # central offline (ou o switch desligado) por muito tempo gera
+        # milhões de linhas de log idênticas, incha o banco do recorder e
+        # pode inutilizar o Home Assistant (caso real relatado pelo
+        # usuário: 12 milhões de linhas em ~35 dias, banco de 16GB). Só
+        # registra a falha UMA VEZ ao virar definitiva, e a recuperação
+        # (quando volta a funcionar) também só uma vez.
+        self._poll_failure_logged = False
+        # Idem, mas específico para "switch de conexão desligado" — esse
+        # caso nem tenta se comunicar com a central (ver
+        # _async_update_data), só precisa de um log próprio na transição.
+        self._disabled_logged = False
 
         # Zonas que nascem habilitadas por padrão no Home Assistant,
         # configurável pelo usuário na inclusão da integração (formato
@@ -228,6 +241,29 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         return self._partition_passwords.get(partition) or self._password
 
     async def _async_update_data(self) -> PanelStatus:
+        if not self.client.enabled:
+            # Switch "Conexão com a central" desligado deliberadamente pelo
+            # usuário — CASO CRÍTICO (bug real relatado em produção): antes
+            # desta correção, o coordinator continuava tentando e logando
+            # ERROR a cada ciclo de polling (0,25s) indefinidamente enquanto
+            # o switch ficasse desligado, gerando milhões de linhas de log
+            # idênticas em poucas semanas e inchando o banco do recorder em
+            # vários GB. Agora: nenhuma tentativa de comunicação sequer é
+            # feita (nem chega a chamar send_command), e o log da transição
+            # para esse estado só acontece UMA VEZ, não a cada ciclo.
+            if not self._disabled_logged:
+                _LOGGER.info(
+                    'Comunicação com a central desativada (switch "Conexão com a '
+                    'central" desligado) — pausando consultas até ser reativado, '
+                    "sem tentar se comunicar nem repetir este log enquanto durar"
+                )
+                self._disabled_logged = True
+            raise UpdateFailed("Comunicação com a central está desativada")
+
+        if self._disabled_logged:
+            _LOGGER.info('Switch "Conexão com a central" reativado — retomando consultas')
+            self._disabled_logged = False
+
         try:
             response = await self.client.send_command(
                 _build_status_frame(self._password, self.family), context="consulta de status"
@@ -251,7 +287,22 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             raise UpdateFailed(str(err)) from err
 
         # Sucesso: reseta a marca de tempo de "última consulta boa", usada
-        # pela lógica de tolerância acima.
+        # pela lógica de tolerância acima. Se estava marcado como falho,
+        # avisa UMA VEZ que voltou a funcionar (pedido explícito do
+        # usuário — sem isso, uma queda real vira indisponibilidade
+        # silenciosa até alguém checar manualmente).
+        if self._poll_failure_logged:
+            elapsed = (
+                time.monotonic() - self._last_poll_success_monotonic
+                if self._last_poll_success_monotonic is not None
+                else 0.0
+            )
+            _LOGGER.warning(
+                "Comunicação com a central reestabelecida (ficou sem responder por "
+                "cerca de %.1fs)",
+                elapsed,
+            )
+            self._poll_failure_logged = False
         self._last_poll_success_monotonic = time.monotonic()
 
         # Scenario A (discutido com o usuário): a central deveria sempre
@@ -296,11 +347,13 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     def _handle_poll_failure(self, err: Exception) -> None:
         """Decide se uma falha de CONSULTA DE STATUS é tolerada ou definitiva.
 
-        Só se aplica à consulta de status periódica — comandos reais
-        (armar, desarmar, PGM, etc.) nunca passam por aqui, sempre falham
-        de forma imediata e visível (ver ``_send_and_check``), porque são
-        ações que o usuário pediu explicitamente e precisam de feedback
-        rápido, não silêncio tolerado.
+        Só se aplica à consulta de status periódica quando o switch de
+        conexão está LIGADO (o caso de switch desligado é tratado à parte,
+        no início de ``_async_update_data``, e nunca chega aqui). Comandos
+        reais (armar, desarmar, PGM, etc.) também nunca passam por aqui,
+        sempre falham de forma imediata e visível (ver ``_send_and_check``),
+        porque são ações que o usuário pediu explicitamente e precisam de
+        feedback rápido, não silêncio tolerado.
 
         Tolerância: se o tempo desde a última consulta bem-sucedida ainda
         está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (8s por
@@ -314,21 +367,41 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         de verdade) quando: nunca houve nenhuma consulta bem-sucedida
         ainda, ou o silêncio acumulado já ultrapassou a janela de
         tolerância — nesse ponto, o problema não parece mais passageiro.
+
+        IMPORTANTE (correção de um bug real de produção): a falha só é
+        REGISTRADA NO LOG uma vez, na transição para o estado "indisponível"
+        — enquanto continuar falhando, os ciclos seguintes levantam
+        ``UpdateFailed`` normalmente (as entidades continuam indisponíveis,
+        como devem) mas SEM gerar uma nova linha de log a cada 0,25s. Sem
+        essa supressão, uma central genuinamente offline por dias/semanas
+        gera milhões de linhas de log idênticas, inchando o banco do
+        `recorder` em vários GB — caso real relatado em produção.
         """
         now = time.monotonic()
         if self._last_poll_success_monotonic is None:
-            _LOGGER.error("Falha na consulta de status (nenhuma comunicação bem-sucedida ainda): %s", err)
+            if not self._poll_failure_logged:
+                _LOGGER.error(
+                    "Falha na consulta de status (nenhuma comunicação bem-sucedida "
+                    "ainda): %s — próximas falhas iguais não serão repetidas no log "
+                    "até a comunicação normalizar",
+                    err,
+                )
+                self._poll_failure_logged = True
             raise UpdateFailed(str(err)) from err
 
         elapsed = now - self._last_poll_success_monotonic
         if elapsed >= DEFAULT_CONNECTION_HEALTH_TIMEOUT:
-            _LOGGER.error(
-                "Falha na consulta de status: %s (sem comunicação bem-sucedida há %.1fs, "
-                "acima da tolerância de %ds — marcando como indisponível)",
-                err,
-                elapsed,
-                DEFAULT_CONNECTION_HEALTH_TIMEOUT,
-            )
+            if not self._poll_failure_logged:
+                _LOGGER.error(
+                    "Falha na consulta de status: %s (sem comunicação bem-sucedida há "
+                    "%.1fs, acima da tolerância de %ds — marcando como indisponível; "
+                    "próximas falhas iguais não serão repetidas no log até a "
+                    "comunicação normalizar)",
+                    err,
+                    elapsed,
+                    DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+                )
+                self._poll_failure_logged = True
             raise UpdateFailed(str(err)) from err
 
         _LOGGER.warning(
@@ -480,11 +553,15 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # um novo ciclo de polling) — assim o sensor "Último comando" fica
         # rastreável em duas fases: o que foi pedido, depois o que a
         # central respondeu. Ver README, seção do sensor "Último comando".
-        _LOGGER.debug(
-            "enviando comando: ação=%s frame=%s",
-            action_label or "(sem rótulo)",
-            frame.hex(" ").upper(),
-        )
+        #
+        # O log de depuração de "enviando comando" NÃO fica aqui de
+        # propósito — fica dentro de PanelClient.send_command(), só depois
+        # de conseguir a vez na fila (o lock da conexão). Se o log fosse
+        # daqui, o horário registrado seria o momento em que decidimos
+        # mandar, não o momento em que o comando realmente saiu pela
+        # conexão — o que gerava sequências de log aparentemente fora de
+        # ordem quando um comando tinha que esperar uma consulta de status
+        # já em andamento (relatado pelo usuário).
         if action_label:
             self.last_command_result = f"{action_label}..."
             self.last_command_action = action_label
