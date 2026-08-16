@@ -241,6 +241,82 @@ modelo detectado.
 > zona" (que não depende de escolher uma zona) continua disponível e
 > funciona normalmente.
 
+### Serviço `intelbras_alarm.send_raw_command` — diagnóstico avançado
+
+Ferramenta pensada para **testar comandos ISECNet ainda não
+implementados/documentados** pela integração — reaproveita a mesma
+conexão persistente já aberta (nunca abre uma segunda) e devolve a
+**resposta bruta** da central via [resposta de serviço](https://www.home-assistant.io/docs/scripts/service-calls/#use-templates-to-handle-response-data)
+(`response_variable` numa automação/script, ou direto na aba Ferramentas
+de desenvolvedor → Ações).
+
+⚠️ **Contorna todas as validações normais da integração de propósito** —
+não injeta senha automaticamente (a menos que você peça), não monta
+checksum (a menos que você peça), não valida se o comando é conhecido.
+A central executa o que for enviado. Não é uma ferramenta para uso no
+dia a dia — é para quem está investigando/testando algo específico do
+protocolo.
+
+Três modos de uso, mutuamente exclusivos:
+
+**1. Frame completo, cru** — envia exatamente os bytes informados, sem
+tocar em nada (nem senha, nem checksum):
+
+```yaml
+service: intelbras_alarm.send_raw_command
+target:
+  entity_id: alarm_control_panel.central
+data:
+  frame: "08 E9 21 31 32 33 34 42 21 5B"
+```
+
+**2. Frame quase completo, com checksum calculado automaticamente** —
+digite o cabeçalho, comando e conteúdo à mão, termine com qualquer byte
+de preenchimento (ex.: `FF`) no lugar do checksum, e marque
+`calculate_checksum: true` — a integração recalcula e substitui só o
+último byte:
+
+```yaml
+service: intelbras_alarm.send_raw_command
+target:
+  entity_id: alarm_control_panel.central
+data:
+  frame: "08 E9 21 31 32 33 34 42 21 FF"
+  calculate_checksum: true
+```
+
+**3. Comando + conteúdo, resto montado pela integração** — só o byte de
+comando e o conteúdo são "crus"; cabeçalho, senha (a memorizada, a menos
+que `password` seja informado) e checksum são montados automaticamente,
+do mesmo jeito que qualquer outro comando já implementado:
+
+```yaml
+service: intelbras_alarm.send_raw_command
+target:
+  entity_id: alarm_control_panel.central
+data:
+  command: "0x42"
+  content: "01 02 03"
+```
+
+Os três modos aceitam hex com ou sem espaços, vírgulas, ponto-e-vírgula
+ou prefixo `0x` por byte (`"08 E9 21"`, `"08,E9,21"` e `"08E921"` são
+todos equivalentes).
+
+Resposta devolvida (exemplo):
+
+```yaml
+frame_enviado: "08 E9 21 31 32 33 34 42 21 5B"
+resposta_bruta: "0A FE 21 00"
+checksum_valido: true
+conteudo: "FE"
+descricao: "OK"   # só presente quando a resposta é curta (tipo ACK/NACK)
+```
+
+Diferente dos demais comandos da integração, um **NACK aqui não vira
+erro** — o objetivo é justamente ver a resposta (incluindo um NACK),
+não interromper a chamada.
+
 O **modelo** e a **versão de firmware** detectados ficam no registro do
 dispositivo (não como entidades separadas), visíveis em
 *Dispositivos → Intelbras \<modelo\> (\<IP\>)*.

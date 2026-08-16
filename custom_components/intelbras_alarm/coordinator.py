@@ -36,6 +36,8 @@ from .protocol import (
     NackError,
     PanelStatus,
     ParsedFrame,
+    build_command,
+    checksum,
     cmd_arm,
     cmd_bypass,
     cmd_disarm,
@@ -44,6 +46,7 @@ from .protocol import (
     cmd_pgm,
     cmd_siren,
     decode_zone_names,
+    parse_hex_bytes,
     parse_status,
     raise_for_ack,
 )
@@ -546,6 +549,98 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             "async_unbypass_zones: após refresh, anuladas_agora=%s",
             {z for z, b in self.data.zones_bypassed.items() if b} if self.data else "sem status",
         )
+
+    async def async_send_raw_command(
+        self,
+        frame: str | None = None,
+        command: str | None = None,
+        content: str | None = None,
+        password: str | None = None,
+        calculate_checksum: bool = False,
+    ) -> dict:
+        """Serviço de diagnóstico avançado: envia um comando "cru" pela
+        conexão já existente e devolve a resposta bruta da central, sem
+        as validações normais da integração — pra testar comandos ainda
+        não implementados/documentados.
+
+        Três modos de uso (mutuamente exclusivos):
+
+        1. Só ``frame``: envia exatamente os bytes informados, sem tocar
+           em nada (nem senha, nem checksum) — máxima flexibilidade, mas
+           você monta tudo à mão, inclusive o checksum.
+        2. ``frame`` + ``calculate_checksum=True``: envia os bytes
+           informados, mas recalcula e substitui o ÚLTIMO byte pelo
+           checksum correto antes de enviar. Útil pra digitar o frame
+           quase inteiro (cabeçalho, comando, conteúdo) sem precisar
+           calcular o checksum manualmente — basta terminar com um byte
+           qualquer como placeholder (ex.: ``FF``).
+        3. ``command`` + ``content`` (sem ``frame``): a integração monta o
+           frame inteiro sozinha (cabeçalho, senha, checksum), do mesmo
+           jeito que qualquer outro comando já implementado — só o byte
+           de comando e o conteúdo em si são "crus"/não documentados.
+
+        Reaproveita a MESMA conexão persistente já aberta (nunca abre uma
+        segunda) e passa pelo mesmo lock serializado de sempre — não há
+        risco de concorrência com a consulta de status ou outros comandos.
+
+        Ao contrário dos demais comandos, um NACK aqui NÃO vira
+        ``HomeAssistantError`` — o objetivo explícito deste serviço é
+        justamente permitir ver a resposta (incluindo um NACK) que a
+        central realmente devolveu, não interromper a chamada.
+        """
+        if frame is not None:
+            try:
+                frame_bytes = bytearray(parse_hex_bytes(frame))
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+            if not frame_bytes:
+                raise HomeAssistantError("Frame vazio")
+            if calculate_checksum:
+                if len(frame_bytes) < 2:
+                    raise HomeAssistantError(
+                        "Frame curto demais para calcular checksum (precisa de "
+                        "pelo menos um byte antes do placeholder final)"
+                    )
+                frame_bytes[-1] = checksum(bytes(frame_bytes[:-1]))
+            final_frame = bytes(frame_bytes)
+        else:
+            if command is None:
+                raise HomeAssistantError(
+                    "Informe 'frame' (comando completo) OU 'command' + "
+                    "'content' (a integração monta o resto)"
+                )
+            try:
+                command_bytes = parse_hex_bytes(command)
+                content_bytes = parse_hex_bytes(content) if content else b""
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+            if len(command_bytes) != 1:
+                raise HomeAssistantError(
+                    "'command' deve ser um único byte, ex.: 42 ou 0x42"
+                )
+            try:
+                final_frame = build_command(
+                    password or self._password, command_bytes[0], content_bytes
+                )
+            except ValueError as err:
+                raise HomeAssistantError(str(err)) from err
+
+        label = "comando bruto (diagnóstico)"
+        _LOGGER.debug("send_raw_command: frame=%s", final_frame.hex(" ").upper())
+        try:
+            response = await self.client.send_command(final_frame, context=label)
+        except PanelConnectionError as err:
+            raise HomeAssistantError(f"Falha de comunicação: {err}") from err
+
+        result: dict = {
+            "frame_enviado": final_frame.hex(" ").upper(),
+            "resposta_bruta": response.raw.hex(" ").upper(),
+            "checksum_valido": response.valid_checksum,
+            "conteudo": response.content.hex(" ").upper(),
+        }
+        if len(response.content) <= 2:
+            result["descricao"] = _describe_response(response)
+        return result
 
     async def _send_and_check(self, frame: bytes, action_label: str | None = None) -> None:
         # Grava a ação sendo enviada ANTES da resposta chegar, e notifica

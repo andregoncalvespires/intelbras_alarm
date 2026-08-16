@@ -29,3 +29,68 @@ bypass_zone:
       default: true
       selector:
         boolean:
+
+send_raw_command:
+  name: Enviar comando bruto (diagnóstico avançado)
+  description: >-
+    Envia um comando ISECNet "cru" pela mesma conexão já aberta com a
+    central e devolve a resposta bruta — para testar comandos ainda não
+    implementados/documentados pela integração. Contorna as validações
+    normais de propósito: a central executa o que for enviado, então use
+    com cuidado. Não gera erro em caso de NACK — o objetivo é justamente
+    ver a resposta, incluindo um NACK, não interromper a chamada.
+  target:
+    entity:
+      integration: intelbras_alarm
+      domain: alarm_control_panel
+  fields:
+    frame:
+      name: Frame completo
+      description: >-
+        O frame inteiro em hex, incluindo cabeçalho e checksum (ex.:
+        "08 E9 21 31 32 33 34 42 21 5B"). Enviado exatamente como digitado,
+        a menos que "Calcular checksum" esteja marcado. Deixe em branco
+        para usar "Comando" + "Conteúdo" no lugar.
+      required: false
+      example: "08 E9 21 31 32 33 34 42 21 FF"
+      selector:
+        text:
+    calculate_checksum:
+      name: Calcular checksum
+      description: >-
+        Só se aplica junto com "Frame completo". Se marcado, recalcula e
+        substitui o ÚLTIMO byte do frame pelo checksum correto antes de
+        enviar — digite o frame quase inteiro e termine com qualquer byte
+        de preenchimento (ex.: FF) no lugar do checksum.
+      required: false
+      default: false
+      selector:
+        boolean:
+    command:
+      name: Comando
+      description: >-
+        Só usado se "Frame completo" estiver em branco. Um único byte de
+        comando (ex.: "42" ou "0x42") — a integração monta o frame inteiro
+        sozinha (cabeçalho, senha, checksum).
+      required: false
+      example: "0x42"
+      selector:
+        text:
+    content:
+      name: Conteúdo
+      description: >-
+        Só usado junto com "Comando". Os bytes de conteúdo do comando, em
+        hex (ex.: "01 02 03"). Deixe em branco para um comando sem
+        conteúdo.
+      required: false
+      example: "01 02 03"
+      selector:
+        text:
+    password:
+      name: Senha
+      description: >-
+        Só usado junto com "Comando". Senha a usar no lugar da senha
+        principal memorizada (mesmo formato, 4 a 6 dígitos).
+      required: false
+      selector:
+        text:

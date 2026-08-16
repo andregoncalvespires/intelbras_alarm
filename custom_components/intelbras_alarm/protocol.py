@@ -52,6 +52,43 @@ def checksum(data: bytes) -> int:
     return (~x) & 0xFF
 
 
+def parse_hex_bytes(text: str) -> bytes:
+    """Converte uma string de bytes em hex livre em ``bytes``.
+
+    Usado pelo serviço de diagnóstico ``send_raw_command`` — aceita
+    espaços, vírgulas ou ponto-e-vírgula como separador, e prefixo ``0x``
+    opcional por byte, pra reduzir erro de digitação de quem está testando
+    comandos manualmente. Ex.: ``"08 E9 21"``, ``"0x08,0xE9;0x21"`` e
+    ``"08E921"`` (sem separador nenhum) todos funcionam.
+    """
+    cleaned = text.strip()
+    for sep in (",", ";"):
+        cleaned = cleaned.replace(sep, " ")
+    tokens = [t for t in cleaned.split() if t]
+    # Sem separador nenhum (ex.: "08E921") — sobra um único "token" colado;
+    # quebra em pares de 2 caracteres nesse caso específico.
+    if len(tokens) == 1 and len(tokens[0]) > 2 and not tokens[0].lower().startswith("0x"):
+        only = tokens[0]
+        if len(only) % 2 != 0:
+            raise ValueError(f"Quantidade ímpar de dígitos hex: {text!r}")
+        tokens = [only[i : i + 2] for i in range(0, len(only), 2)]
+    result = bytearray()
+    for tok in tokens:
+        tok = tok.strip()
+        if tok.lower().startswith("0x"):
+            tok = tok[2:]
+        if not tok:
+            continue
+        try:
+            value = int(tok, 16)
+        except ValueError as err:
+            raise ValueError(f"Byte inválido: {tok!r} (use hex, ex.: 08 ou 0x08)") from err
+        if not (0 <= value <= 0xFF):
+            raise ValueError(f"Byte fora do intervalo 0x00-0xFF: {tok!r}")
+        result.append(value)
+    return bytes(result)
+
+
 def build_command(password: str, command: int, content: bytes = b"") -> bytes:
     """Monta um frame ISECNet/ISECMobile completo pronto para envio."""
     if not (4 <= len(password) <= 6):

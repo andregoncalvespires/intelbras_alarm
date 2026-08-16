@@ -9,7 +9,7 @@ from homeassistant.components.alarm_control_panel import (
     CodeFormat,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, SupportsResponse
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity import DeviceInfo
@@ -36,6 +36,13 @@ PARTITION_NAMES = {"A": "Partição A", "B": "Partição B", "C": "Partição C"
 SERVICE_BYPASS_ZONE = "bypass_zone"
 ATTR_ZONES = "zones"
 ATTR_BYPASS = "bypass"
+
+SERVICE_SEND_RAW_COMMAND = "send_raw_command"
+ATTR_FRAME = "frame"
+ATTR_COMMAND = "command"
+ATTR_CONTENT = "content"
+ATTR_PASSWORD = "password"
+ATTR_CALCULATE_CHECKSUM = "calculate_checksum"
 
 
 async def async_setup_entry(
@@ -93,6 +100,26 @@ async def async_setup_entry(
             vol.Optional(ATTR_BYPASS, default=True): cv.boolean,
         },
         "async_bypass_zone_service",
+    )
+
+    # Serviço `intelbras_alarm.send_raw_command` — ferramenta de diagnóstico
+    # avançado para testar comandos ainda não implementados/documentados
+    # pela integração. Reaproveita a mesma conexão persistente já aberta
+    # (ver `IntelbrasAlarmCoordinator.async_send_raw_command`), nunca abre
+    # uma segunda. Devolve a resposta bruta da central via resposta de
+    # serviço (visível em Ferramentas de desenvolvedor → Ações, ou com
+    # `response_variable` numa automação/script).
+    platform.async_register_entity_service(
+        SERVICE_SEND_RAW_COMMAND,
+        {
+            vol.Optional(ATTR_FRAME): cv.string,
+            vol.Optional(ATTR_COMMAND): cv.string,
+            vol.Optional(ATTR_CONTENT): cv.string,
+            vol.Optional(ATTR_PASSWORD): cv.string,
+            vol.Optional(ATTR_CALCULATE_CHECKSUM, default=False): cv.boolean,
+        },
+        "async_send_raw_command_service",
+        supports_response=SupportsResponse.ONLY,
     )
 
 
@@ -224,6 +251,36 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
             await self.coordinator.async_bypass_zones(zone_set)
         else:
             await self.coordinator.async_unbypass_zones(zone_set)
+
+    async def async_send_raw_command_service(
+        self,
+        frame: str | None = None,
+        command: str | None = None,
+        content: str | None = None,
+        password: str | None = None,
+        calculate_checksum: bool = False,
+    ) -> dict:
+        """Implementa o serviço `intelbras_alarm.send_raw_command`.
+
+        Ferramenta de diagnóstico avançado para testar comandos ISECNet
+        ainda não implementados/documentados pela integração — envia o
+        comando pela mesma conexão persistente já aberta e devolve a
+        resposta bruta da central. Ver
+        `IntelbrasAlarmCoordinator.async_send_raw_command` para os três
+        modos de uso possíveis (frame completo, frame + checksum
+        calculado automaticamente, ou comando+conteúdo com o resto
+        montado pela integração).
+
+        ⚠️ Contorna as validações normais da integração de propósito — a
+        central executa o que for enviado, então use com cuidado.
+        """
+        return await self.coordinator.async_send_raw_command(
+            frame=frame,
+            command=command,
+            content=content,
+            password=password,
+            calculate_checksum=calculate_checksum,
+        )
 
 
 class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
