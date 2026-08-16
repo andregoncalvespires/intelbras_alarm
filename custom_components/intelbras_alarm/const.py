@@ -214,6 +214,39 @@ ZONE_NAME_RECORD_LEN = 16
 ZONE_NAME_MAX_READ = 0xC0  # 192 bytes = 12 zonas por leitura (limite do comando 0x5C)
 
 # ---------------------------------------------------------------------------
+# EEPROM — log de eventos (mesmo comando 0x5C, endereço/tamanho confirmados
+# por captura real: 256 registros de 8 bytes, de 0x1800 a 0x2000). Ver
+# README_DETALHADO.md para a estrutura de bits de cada registro.
+# ---------------------------------------------------------------------------
+EVENT_LOG_BASE_ADDRESS = 0x1800
+EVENT_LOG_TOTAL_BYTES = 0x800  # 2048 bytes = 256 registros
+EVENT_RECORD_LEN = 8
+EVENT_LOG_MAX_RECORDS = EVENT_LOG_TOTAL_BYTES // EVENT_RECORD_LEN  # 256
+EVENT_LOG_CHUNK_BYTES = 0xC0  # 192 bytes = 24 registros por leitura (mesmo limite do 0x5C)
+# Quantos dos eventos mais recentes (já ordenados por data/hora real) ficam
+# disponíveis nos atributos da entidade "Últimos eventos" — o serviço de
+# leitura sempre devolve TODOS os eventos na resposta, independente deste
+# número; só a entidade fica limitada, para não gerar um atributo enorme.
+EVENT_ENTITY_RECENT_COUNT = 24
+
+# Modelo -> (limiar mínimo de firmware (major, minor), ou None = qualquer
+# firmware) para ter acesso ao comando 0x5C nesse contexto (nomes de
+# zona/painel/usuário e leitura de eventos). Extraído literalmente da tela
+# de ajuda "Senha Acesso Remoto" do app oficial AMT Mobile — centrais fora
+# desta lista (ex.: AMT 1016 NET com qualquer firmware, mesmo que suportada
+# pelo resto desta integração) usam um protocolo legado diferente (0xE7,
+# não implementado aqui por ser mais arriscado — ver README, seção de
+# limitações conhecidas) e por isso não têm nomes de zona nem eventos
+# disponíveis nesta integração.
+EEPROM_EXTENDED_MIN_FIRMWARE: dict[str, tuple[int, int] | None] = {
+    MODEL_2018_EG: (7, 7),
+    MODEL_4010_SMART: (3, 2),
+    MODEL_1016_NET: (4, 1),
+    MODEL_2018_SMART: None,
+    MODEL_AMN24_NET: None,
+}
+
+# ---------------------------------------------------------------------------
 # Entidades / plataformas
 # ---------------------------------------------------------------------------
 SIGNAL_STATUS_UPDATE = f"{DOMAIN}_status_update"

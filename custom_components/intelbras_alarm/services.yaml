@@ -94,3 +94,20 @@ send_raw_command:
       required: false
       selector:
         text:
+
+read_events:
+  name: Ler log de eventos
+  description: >-
+    Lê o log de eventos completo da central (até 256 eventos, EEPROM via
+    comando 0x5C) e devolve todos já traduzidos (data/hora, zona ou
+    usuário, partição, código e descrição) na resposta do serviço. Também
+    atualiza a entidade "Últimos eventos" com os mais recentes. Sempre lê
+    e ordena o log inteiro pela data/hora real de cada evento — a ordem
+    de endereço na memória da central não corresponde à ordem
+    cronológica (confirmado em testes reais). Só funciona nos
+    modelos/firmwares com acesso a esse comando (ver README) — levanta
+    erro claro nos demais, sem tentar nada na central.
+  target:
+    entity:
+      integration: intelbras_alarm
+      domain: alarm_control_panel

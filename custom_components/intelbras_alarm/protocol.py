@@ -693,3 +693,92 @@ def _is_uninitialized_pattern(raw: bytes) -> bool:
     if len(raw) < 2:
         return False
     return all(raw[i] + 1 == raw[i + 1] for i in range(len(raw) - 1))
+
+
+# ---------------------------------------------------------------------------
+# EEPROM — log de eventos (comando 0x5C, endereço 0x1800, registros de 8
+# bytes cada). Estrutura de bits e tabela de códigos confirmadas por
+# captura real e cruzadas com a tela de configuração de eventos do
+# software oficial "Receptor IP" da Intelbras — ver README_DETALHADO.md.
+# ---------------------------------------------------------------------------
+
+# byte do registro (campo "codigo_raw" de parse_event_record) -> (código de
+# 4 dígitos exibido no app/Receptor IP, descrição oficial). Só inclui os
+# bytes brutos que já foram observados e confirmados em captura real — um
+# código de evento cujo byte bruto ainda não foi visto aparece como
+# "Código desconhecido (N)" em vez de arriscar um palpite errado.
+EVENT_CODE_TABLE: dict[int, tuple[str, str]] = {
+    0: ("3401", "Ativação pelo usuário"),
+    128: ("1401", "Desativação pelo usuário"),
+    1: ("3456", "Ativação parcial"),
+    2: ("3130", "Restauração de disparo de zona"),
+    130: ("1130", "Disparo de zona"),
+    42: ("3147", "Restauração da supervisão Smart"),
+    170: ("1147", "Falha da supervisão Smart"),
+    43: ("3422", "Desacionamento de PGM"),
+    171: ("1422", "Acionamento de PGM"),
+    139: ("1570", "Anulação temporária de zona"),
+    160: ("1410", "Acesso remoto pelo software de download/upload"),
+    163: ("1602", "Teste periódico"),
+    137: ("1333", "Problema em teclado ou receptor"),
+    45: ("3333", "Restauração problema em teclado ou receptor"),
+    167: ("3301", "Restauração falha na rede elétrica"),
+    13: ("1625", "Data e hora foram reiniciadas"),
+    143: ("1311", "Bateria principal ausente ou invertida"),
+}
+
+_EVENT_PARTITION_LETTERS = {0: "-", 1: "A", 2: "B", 3: "C", 4: "D"}
+
+
+def parse_event_record(record: bytes) -> dict | None:
+    """Decodifica um registro de 8 bytes do log de eventos (EEPROM 0x1800+).
+
+    Estrutura confirmada por captura real: os 8 bytes são invertidos e
+    tratados como uma sequência única de 64 bits, com os campos abaixo
+    lidos em faixas de bits específicas (não são bytes alinhados). Ver
+    README_DETALHADO.md para o significado de cada faixa.
+
+    Devolve ``None`` para registros vazios/não inicializados (mês ou dia
+    fora do intervalo válido — nunca gravados pela central ainda), em vez
+    de inventar uma data inválida.
+    """
+    if len(record) != 8:
+        raise ValueError(f"Registro de evento deve ter 8 bytes, recebeu {len(record)}")
+
+    bits = "".join(f"{b:08b}" for b in reversed(record))
+
+    def campo(inicio: int, fim: int) -> int:
+        return int(bits[inicio:fim], 2)
+
+    ano = campo(1, 8)
+    dia = campo(10, 15)
+    hora = campo(15, 20)
+    minuto = campo(20, 26)
+    segundo = campo(26, 32)
+    mes = campo(32, 36)
+    zona_usuario = campo(36, 48)
+    codigo_raw = campo(48, 56)
+    particao_bruta = campo(58, 64)
+    if particao_bruta > 9:
+        particao_bruta -= 6
+
+    from datetime import datetime
+
+    try:
+        data_hora = datetime(2000 + ano, mes, dia, hora, minuto, segundo)
+    except ValueError:
+        return None  # registro vazio/não inicializado — não é um evento real
+
+    codigo_app, descricao = EVENT_CODE_TABLE.get(
+        codigo_raw, (None, f"Código desconhecido ({codigo_raw})")
+    )
+
+    return {
+        "data_hora": data_hora,
+        "zona_usuario": zona_usuario,
+        "particao": _EVENT_PARTITION_LETTERS.get(particao_bruta, str(particao_bruta)),
+        "codigo_raw": codigo_raw,
+        "codigo_app": codigo_app,
+        "descricao": descricao,
+    }
+

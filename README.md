@@ -1,5 +1,21 @@
 # Intelbras Alarm (ISECNet) — Home Assistant
 
+> ## ⚠️ Responsabilidade sobre o uso da integração e garantia
+>
+> **Este projeto NÃO tem participação alguma da Intelbras.**
+>
+> - A decisão de uso é totalmente de responsabilidade do usuário.
+> - O responsável pelo repositório e eventuais colaboradores não são nem
+>   serão responsáveis por eventuais sinistros após a instalação da
+>   integração.
+> - A integração possui conexão direta com a central de segurança, usando
+>   a senha que o próprio usuário informa. O uso inadequado de suas
+>   funcionalidades pode comprometer sua segurança.
+> - Garanta que as práticas de segurança e uso da central permaneçam
+>   adequadas com a utilização da integração.
+> - **Ao instalar e configurar esta integração, você está ciente e
+>   aceitando estes termos.**
+
 Integração HACS para centrais de alarme Intelbras **AMT 1016 NET, AMT 2018
 E/EG, AMT 2018 E SMART, AMN 24 NET e AMT 4010 SMART**, via protocolo
 ISECNet/ISECMobile (o mesmo do app AMT Mobile) — conexão TCP direta e
@@ -120,16 +136,41 @@ configuração inicial) — para isso, remova e reconfigure.
   expansores de PGM/zona.
 - **Bateria e contadores** (`sensor`): nível de bateria (%), contagem de
   zonas abertas/violadas/anuladas/com bateria baixa (sensores sem fio, com
-  a lista de quais zonas nos atributos), e **"Último comando"** (rastreia
+  a lista de quais zonas nos atributos), **"Último comando"** (rastreia
   a última ação enviada e a resposta da central, separado da consulta de
-  status normal).
+  status normal), e **"Últimos eventos"** (só nos modelos/firmwares da
+  tabela abaixo — ver seção própria mais adiante).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —
   útil para manutenção, sem precisar remover a integração.
 - **Botões** (`button`): pânico (silencioso/audível/médico/incêndio),
   anular zonas abertas/violadas/ambas, remover todas as anulações, e
-  (só na 4010) sincronizar nomes de zona lidos da central.
+  (só nos modelos/firmwares da tabela abaixo) sincronizar nomes de zona
+  lidos da central.
+
+## Nomes de zona e log de eventos — só em alguns modelos/firmwares
+
+Ler nomes de zona (EEPROM) e o log de eventos da central usa o mesmo
+comando (`0x5C`) e só está disponível nos modelos/firmwares abaixo —
+exatamente a mesma lista que o app oficial AMT Mobile usa para decidir se
+pede a "Senha de Acesso Remoto" para essas duas funções:
+
+| Modelo | Firmware mínimo |
+|---|---|
+| AMT 2018 EG | ≥ 7.70 |
+| AMT 4010 SMART | ≥ 3.20 |
+| AMT 1016 NET | ≥ 4.10 |
+| AMT 2018 E SMART | qualquer |
+| AMN 24 NET | qualquer |
+
+Fora dessa lista (por exemplo, uma AMT 1016 NET com firmware abaixo de
+4.10 — inclusive a central usada para testar esta integração, que está
+no firmware 3.1), a central usa um protocolo diferente e mais antigo, que
+esta integração **não implementa de propósito** — uma tentativa real de
+usá-lo travou a comunicação da central durante os testes. Nesses casos, o
+botão de sincronizar nomes de zona e o serviço de eventos simplesmente
+não fazem nada (a entidade "Últimos eventos" fica sempre indisponível).
 
 ## Serviço `intelbras_alarm.bypass_zone`
 
@@ -147,6 +188,28 @@ data:
 
 Sempre usa a senha configurada da central (não depende das opções de
 "pedir senha" da UI). Preserva anulações já existentes em outras zonas.
+
+## Serviço `intelbras_alarm.read_events`
+
+Lê o log de eventos completo da central (até 256 eventos) e devolve todos
+já traduzidos (data/hora, zona ou usuário, partição, código e descrição)
+na resposta do serviço — além de atualizar a entidade **"Últimos
+eventos"** com os mais recentes, para consulta rápida sem precisar olhar
+a resposta do serviço toda vez.
+
+```yaml
+service: intelbras_alarm.read_events
+target:
+  entity_id: alarm_control_panel.central
+```
+
+Só disponível nos modelos/firmwares da tabela acima. Pensado para ser
+chamado por uma automação no intervalo que você quiser (ex.: a cada 5
+minutos) — cada chamada sempre lê e ordena o log inteiro por data/hora
+real de cada evento (a ordem de endereço na memória **não** corresponde
+à ordem cronológica, confirmado em testes reais), então o resultado é
+sempre consistente, não importa quantas vezes ou com que frequência você
+chamar.
 
 ## Dicas de uso
 

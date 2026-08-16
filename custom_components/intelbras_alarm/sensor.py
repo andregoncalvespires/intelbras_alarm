@@ -47,6 +47,7 @@ async def async_setup_entry(
                 icon="mdi:battery-alert-variant-outline",
             ),
             IntelbrasLastCommandResultSensor(coordinator, entry),
+            IntelbrasRecentEventsSensor(coordinator, entry),
         ]
     )
 
@@ -182,3 +183,66 @@ class IntelbrasLastCommandResultSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
         if self.coordinator.last_command_response_hex is not None:
             attrs["ultimo_comando_resposta"] = self.coordinator.last_command_response_hex
         return attrs
+
+
+class IntelbrasRecentEventsSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Eventos mais recentes lidos do log de eventos da central (EEPROM).
+
+    Só é útil em modelos/firmwares com acesso ao comando 0x5C para isso
+    (ver ``coordinator.supports_extended_eeprom`` e a tabela no README) —
+    nos demais, fica sempre indisponível, já que a leitura nunca é
+    tentada. Atualizado pelo serviço ``intelbras_alarm.read_events`` (ver
+    alarm_control_panel.py), não pelo polling normal — chamar esse
+    serviço é o que dispara a leitura.
+
+    O estado é só o evento mais recente, resumido (cabe folgado no limite
+    de 255 caracteres de um estado do Home Assistant); a lista completa
+    dos ``EVENT_ENTITY_RECENT_COUNT`` mais recentes (com todos os campos
+    decodificados) fica nos atributos. O serviço em si devolve TODOS os
+    eventos lidos (até 256) na resposta da chamada — só a entidade fica
+    limitada, para não gerar um atributo enorme.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Últimos eventos"
+    _attr_icon = "mdi:history"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_recent_events"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.supports_extended_eeprom
+
+    @property
+    def native_value(self) -> str | None:
+        eventos = self.coordinator.recent_events
+        if not eventos:
+            return "Nenhum evento lido ainda"
+        ev = eventos[0]
+        data_hora = ev["data_hora"].strftime("%d/%m/%Y %H:%M:%S")
+        cod = ev["codigo_app"] or f"?{ev['codigo_raw']}"
+        # Mantém dentro do limite de 255 caracteres de um estado do HA —
+        # folgado aqui, mas evita qualquer risco se a descrição crescer.
+        texto = f"{data_hora} · {cod} · {ev['descricao']}"
+        return texto[:255]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        eventos = self.coordinator.recent_events
+        return {
+            "eventos": [
+                {
+                    "data_hora": ev["data_hora"].strftime("%d/%m/%Y %H:%M:%S"),
+                    "zona_usuario": ev["zona_usuario"],
+                    "particao": ev["particao"],
+                    "codigo": ev["codigo_app"] or f"desconhecido ({ev['codigo_raw']})",
+                    "descricao": ev["descricao"],
+                }
+                for ev in eventos
+            ]
+        }
+

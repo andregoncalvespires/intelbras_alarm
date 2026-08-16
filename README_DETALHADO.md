@@ -1,5 +1,21 @@
 # Intelbras Alarm (ISECNet) — Home Assistant
 
+> ## ⚠️ Responsabilidade sobre o uso da integração e garantia
+>
+> **Este projeto NÃO tem participação alguma da Intelbras.**
+>
+> - A decisão de uso é totalmente de responsabilidade do usuário.
+> - O responsável pelo repositório e eventuais colaboradores não são nem
+>   serão responsáveis por eventuais sinistros após a instalação da
+>   integração.
+> - A integração possui conexão direta com a central de segurança, usando
+>   a senha que o próprio usuário informa. O uso inadequado de suas
+>   funcionalidades pode comprometer sua segurança.
+> - Garanta que as práticas de segurança e uso da central permaneçam
+>   adequadas com a utilização da integração.
+> - **Ao instalar e configurar esta integração, você está ciente e
+>   aceitando estes termos.**
+
 Integração nativa (custom component / HACS) para centrais de alarme Intelbras
 **AMT 1016 NET, AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET e AMT 4010 SMART**,
 via protocolo **ISECNet/ISECMobile** (o mesmo usado pelo app AMT Mobile) —
@@ -165,10 +181,11 @@ modelos/firmwares.
 | `sensor` | Bateria (%) | diagnóstico; zera automaticamente se a bateria estiver ausente/invertida OU em curto (ver seção específica abaixo) |
 | `sensor` | Zonas abertas / Zonas violadas / Zonas anuladas / Zonas com bateria baixa (contadores) | diagnóstico; atributo `zonas` com a lista dos números das zonas naquele estado (e `zonas_nomes` também, se a central informar nomes — família 4010), "Zonas com bateria baixa" soma o bitmap de sensores sem fio (Status39-43 na 2018/1016, Status47-52 na 4010 — só zonas 17-64 na 4010, que é a única faixa com sensor sem fio nesse modelo) |
 | `sensor` | Último comando | diagnóstico — grava a **ação enviada** assim que o comando sai (ex.: `"Ativar Partição A..."`) e depois **atualiza** com o resultado (ex.: `"Ativar Partição A: OK"` ou `"Ativar Partição A: Senha incorreta"`) |
+| `sensor` | Últimos eventos | diagnóstico — só nos modelos/firmwares com acesso ao comando `0x5C` para eventos (ver seção "Nomes de zona e log de eventos" abaixo); fica indisponível nos demais. Estado = evento mais recente; atributo `eventos` = lista dos `EVENT_ENTITY_RECENT_COUNT` (24) mais recentes. Atualizada pelo serviço `intelbras_alarm.read_events`, não pelo polling normal |
 | `button` | Pânico silencioso / audível / emergência médica / incêndio | comando `0x45` |
 | `button` | Anular zonas abertas / Anular zonas violadas / Anular zonas abertas ou violadas | comando `0x42`; preserva anulações já existentes em outras zonas; o terceiro botão une os dois conjuntos numa única operação (evita que uma anulação desfaça a outra, já que o comando é absoluto) |
 | `button` | Remover todas as anulações de zona | comando `0x42`; reativa **todas** as zonas de uma vez (não pede número de zona) |
-| `button` | Sincronizar nomes de zona | só família 4010 |
+| `button` | Sincronizar nomes de zona | só nos modelos/firmwares com acesso ao comando `0x5C` para isso — ver seção "Nomes de zona e log de eventos" abaixo (**não** é mais "só família 4010"; passou a valer para toda a lista, incluindo 2018 EG/E SMART e AMN 24 NET com as ressalvas de firmware) |
 
 > Todos os `button` acima ficam **indisponíveis** quando a comunicação com
 > a central não está ativa (switch desligado, ou falha de conexão) — não
@@ -316,6 +333,51 @@ descricao: "OK"   # só presente quando a resposta é curta (tipo ACK/NACK)
 Diferente dos demais comandos da integração, um **NACK aqui não vira
 erro** — o objetivo é justamente ver a resposta (incluindo um NACK),
 não interromper a chamada.
+
+### Serviço `intelbras_alarm.read_events` — log de eventos
+
+Só disponível nos modelos/firmwares com acesso ao comando `0x5C` para
+isso — ver a tabela na seção "Nomes de zona e log de eventos" mais
+abaixo. Lê o log de eventos **inteiro** (até 256 registros) a cada
+chamada, sempre ordenado pela data/hora real decodificada de cada
+evento (nunca pela ordem de endereço — ver aviso na mesma seção):
+
+```yaml
+service: intelbras_alarm.read_events
+target:
+  entity_id: alarm_control_panel.central
+```
+
+Resposta (exemplo, truncada):
+
+```yaml
+total_eventos: 87
+eventos:
+  - data_hora: "16/08/2026 00:00:01"
+    zona_usuario: 0
+    particao: "-"
+    codigo: "1602"
+    descricao: "Teste periódico"
+  - data_hora: "15/08/2026 20:06:20"
+    zona_usuario: 4
+    particao: "D"
+    codigo: "1401"
+    descricao: "Desativação pelo usuário"
+  # ...
+```
+
+Como efeito colateral, também atualiza a entidade **"Últimos eventos"**
+com os `EVENT_ENTITY_RECENT_COUNT` (24) mais recentes — pensado para ser
+chamado por uma automação no intervalo que você quiser (não há polling
+automático de eventos, só quando o serviço é chamado explicitamente).
+
+O campo `zona_usuario` é o número cru — pode ser uma **zona** ou um
+**usuário**, dependendo do tipo de evento (ex.: em "Disparo de zona" é o
+número da zona; em "Ativação pelo usuário" é o número do usuário). Esta
+integração não resolve esse número para o nome correspondente (nem de
+zona, nem de usuário) automaticamente — fica como número mesmo, para
+manter o escopo desta primeira versão simples; o nome da zona pode ser
+cruzado manualmente com as entidades de zona já existentes, se precisar.
 
 O **modelo** e a **versão de firmware** detectados ficam no registro do
 dispositivo (não como entidades separadas), visíveis em
@@ -594,11 +656,97 @@ recebidos em hex, não só a contagem.
    `0x5B` (status completo) e identifica o modelo pelo Status25.
 3. Caso contrário, identifica o modelo pelo Status19 da resposta ao `0x5A`.
 
-### Nomes de zona (EEPROM, só família 4010)
-Endereço = `0x0800 + (zona-1) × 16`, registros ASCII de 16 bytes terminados
-em `NUL`. Lidos em lotes de 12 zonas (192 bytes, limite do comando `0x5C`).
-Um padrão de fábrica (`A,B,C,D...` sequencial) é detectado e tratado como
-"sem nome configurado", caindo de volta para `Zona NN`.
+### Nomes de zona e log de eventos (EEPROM, comando `0x5C`)
+
+Ambos usam o mesmo comando (`0x5C`) e a mesma restrição de
+modelo/firmware — a lista abaixo foi extraída literalmente da tela de
+ajuda "Senha Acesso Remoto" do app oficial AMT Mobile, que documenta
+exatamente quais centrais **não** precisam dessa senha adicional para
+sincronizar nomes/eventos (e, por extensão, são as que têm esse comando
+liberado nesse contexto):
+
+| Modelo | Firmware mínimo |
+|---|---|
+| AMT 2018 EG | ≥ 7.70 (byte `0x77`) |
+| AMT 4010 SMART | ≥ 3.20 (byte `0x32`) |
+| AMT 1016 NET | ≥ 4.10 (byte `0x41`) |
+| AMT 2018 E SMART | qualquer |
+| AMN 24 NET | qualquer |
+
+Ver `coordinator.supports_extended_eeprom` e `const.EEPROM_EXTENDED_MIN_FIRMWARE`.
+Fora dessa lista — **inclusive a AMT 1016 NET com firmware abaixo de
+4.10** (a central usada para testar esta integração está no firmware
+3.1, portanto fora da lista) — a central usa um protocolo diferente e
+mais antigo (comando `0xE7`), que **não é implementado aqui de
+propósito**: uma tentativa real de reverso desse protocolo travou a
+comunicação da central durante os testes (recuperou sozinha depois de
+alguns minutos, mas ficou sem responder tanto pela integração quanto
+pelo app oficial nesse meio tempo). Ver a seção "Limitações conhecidas"
+mais abaixo para os detalhes dessa investigação.
+
+**Nomes de zona**: endereço `0x0800 + (zona-1) × 16`, registros ASCII de
+16 bytes terminados em `NUL`. Lidos em lotes de 12 zonas (192 bytes,
+limite por leitura do comando `0x5C`). Um padrão de fábrica (`A,B,C,D...`
+sequencial) é detectado e tratado como "sem nome configurado", caindo de
+volta para `Zona NN`.
+
+**Log de eventos**: endereço fixo `0x1800`, 256 registros de 8 bytes cada
+(2048 bytes = `0x1800` a `0x2000`), lidos em blocos de até 192 bytes (24
+registros) por leitura — o último bloco fica menor (128 bytes = 16
+registros), já que 256 não é múltiplo de 24. Cada registro de 8 bytes é
+um *bitfield* compacto (não são bytes alinhados a cada campo) — os 8
+bytes são invertidos e tratados como uma sequência única de 64 bits:
+
+| Campo | Bits (após inverter os bytes) | Observação |
+|---|---|---|
+| Ano | 1-8 | Somado a 2000 |
+| Dia | 10-15 | |
+| Hora | 15-20 | |
+| Minuto | 20-26 | |
+| Segundo | 26-32 | |
+| Mês | 32-36 | |
+| Zona/Usuário | 36-48 | Número da zona OU do usuário, dependendo do evento |
+| Código do evento | 48-56 | Ver tabela abaixo |
+| Partição | 58-64 | `0`=nenhuma, `1..4`=A..D (valores >9 subtraem 6 antes de mapear) |
+
+Um registro com mês/dia inválidos (nunca escrito pela central) é
+descartado silenciosamente — não é um evento real. Ver
+`protocol.parse_event_record()`.
+
+> ⚠️ **A ordem de endereço não é a ordem cronológica** — confirmado em
+> testes reais (eventos "voltam no tempo" entre um bloco e o próximo, e
+> até dentro do mesmo bloco). Por isso, `async_read_events()` sempre lê
+> o log inteiro (as 11 leituras) e ordena pela data/hora **decodificada**
+> de cada registro, nunca pela posição do endereço.
+
+**Tabela de códigos de evento**: a estrutura de bits foi decifrada por
+engenharia reversa do app oficial (decompilação do APK) e validada com
+capturas reais de tráfego; a tabela de tradução dos códigos (`0` →
+"Ativação pelo usuário", etc.) foi cruzada com a tela de configuração de
+eventos do software oficial "Receptor IP" da Intelbras — só os códigos
+brutos já **observados em captura real** têm tradução; um código nunca
+visto aparece como `"Código desconhecido (N)"` em vez de arriscar um
+palpite. Ver `protocol.EVENT_CODE_TABLE`.
+
+| Byte bruto | Código exibido no app | Descrição |
+|---|---|---|
+| `0` | 3401 | Ativação pelo usuário |
+| `128` | 1401 | Desativação pelo usuário |
+| `1` | 3456 | Ativação parcial |
+| `2` | 3130 | Restauração de disparo de zona |
+| `130` | 1130 | Disparo de zona |
+| `42` | 3147 | Restauração da supervisão Smart |
+| `170` | 1147 | Falha da supervisão Smart |
+| `43` | 3422 | Desacionamento de PGM |
+| `171` | 1422 | Acionamento de PGM |
+| `139` | 1570 | Anulação temporária de zona |
+| `160` | 1410 | Acesso remoto pelo software de download/upload |
+| `163` | 1602 | Teste periódico |
+| `137` | 1333 | Problema em teclado ou receptor |
+| `45` | 3333 | Restauração problema em teclado ou receptor |
+| `167` | 3301 | Restauração falha na rede elétrica |
+| `13` | 1625 | Data e hora foram reiniciadas |
+| `143` | 1311 | Bateria principal ausente ou invertida |
 
 ---
 
@@ -829,6 +977,30 @@ não estão batendo com o comportamento real da central.
   novas — mas se duas anulações forem disparadas quase ao mesmo tempo
   (ex.: automação + botão manual), a mais recente pode não considerar uma
   anulação ainda não refletida no último status lido.
+- Nomes de zona e log de eventos **não estão disponíveis em todos os
+  modelos/firmwares suportados pelo resto da integração** — só nos
+  listados na seção "Nomes de zona e log de eventos" acima. Isso inclui
+  a **AMT 1016 NET com firmware abaixo de 4.10** (a central usada para
+  testar esta integração está no firmware 3.1, portanto fora da lista).
+
+### Protocolo legado (`0xE7`) de nomes/eventos: não implementado de propósito
+
+Para modelos/firmwares fora da lista de "Nomes de zona e log de eventos",
+a central usa um protocolo diferente e mais antigo (frames começando em
+`0xE7`, com um CRC-16 próprio, distinto do checksum simples usado no
+resto do protocolo). Esse protocolo foi parcialmente decifrado por
+engenharia reversa (decompilação do APK oficial + comparação com o
+projeto independente [`tarikbc/ha-intelbras-alarm`](https://github.com/tarikbc/ha-intelbras-alarm)),
+mas **uma tentativa real de uso travou a comunicação da central**
+durante os testes desta integração (parou de responder tanto pela
+integração quanto pelo app oficial; recuperou sozinha depois de alguns
+minutos, sem precisar de reset físico). Por esse motivo, **esse
+protocolo não foi implementado nesta integração** — o risco de travar
+uma central de segurança de verdade supera o valor de ter nomes/eventos
+nos poucos modelos/firmwares fora da lista suportada. Se você tem uma
+central nessa situação e quer nomes de zona/eventos mesmo assim, o
+caminho seria uma implementação separada e mais cautelosa desse
+protocolo — fora do escopo desta integração por ora.
 
 ### Bug conhecido da central (não da integração): senha única em central particionada
 

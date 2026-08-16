@@ -44,6 +44,8 @@ ATTR_CONTENT = "content"
 ATTR_PASSWORD = "password"
 ATTR_CALCULATE_CHECKSUM = "calculate_checksum"
 
+SERVICE_READ_EVENTS = "read_events"
+
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -120,6 +122,19 @@ async def async_setup_entry(
         },
         "async_send_raw_command_service",
         supports_response=SupportsResponse.ONLY,
+    )
+
+    # Serviço `intelbras_alarm.read_events` — lê o log de eventos completo
+    # da central (EEPROM, comando 0x5C) e devolve todos já traduzidos na
+    # resposta do serviço, além de atualizar a entidade "Últimos eventos"
+    # com os mais recentes. Só disponível nos modelos/firmwares com acesso
+    # a esse comando — ver `IntelbrasAlarmCoordinator.supports_extended_eeprom`
+    # e o README, seção de modelos suportados.
+    platform.async_register_entity_service(
+        SERVICE_READ_EVENTS,
+        {},
+        "async_read_events_service",
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
 
@@ -281,6 +296,35 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
             password=password,
             calculate_checksum=calculate_checksum,
         )
+
+    async def async_read_events_service(self) -> dict:
+        """Implementa o serviço `intelbras_alarm.read_events`.
+
+        Lê o log de eventos completo da central (256 registros possíveis,
+        endereço 0x1800-0x2000, comando 0x5C) e devolve todos já
+        traduzidos na resposta do serviço — não só os mais recentes.
+        Como efeito colateral, também atualiza a entidade "Últimos
+        eventos" com os mais recentes (independente de quantos vierem na
+        resposta aqui).
+
+        Só funciona em modelos/firmwares com acesso a esse comando (ver
+        README) — levanta erro claro nos demais, sem tentar nada na
+        central.
+        """
+        eventos = await self.coordinator.async_read_events()
+        return {
+            "total_eventos": len(eventos),
+            "eventos": [
+                {
+                    "data_hora": ev["data_hora"].strftime("%d/%m/%Y %H:%M:%S"),
+                    "zona_usuario": ev["zona_usuario"],
+                    "particao": ev["particao"],
+                    "codigo": ev["codigo_app"] or f"desconhecido ({ev['codigo_raw']})",
+                    "descricao": ev["descricao"],
+                }
+                for ev in eventos
+            ],
+        }
 
 
 class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):

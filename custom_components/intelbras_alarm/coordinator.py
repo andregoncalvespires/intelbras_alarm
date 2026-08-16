@@ -17,6 +17,12 @@ from .const import (
     DEFAULT_CONNECTION_HEALTH_TIMEOUT,
     DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_REQUEST_TIMEOUT,
+    EEPROM_EXTENDED_MIN_FIRMWARE,
+    EVENT_ENTITY_RECENT_COUNT,
+    EVENT_LOG_BASE_ADDRESS,
+    EVENT_LOG_CHUNK_BYTES,
+    EVENT_LOG_TOTAL_BYTES,
+    EVENT_RECORD_LEN,
     FAMILY_2018,
     FAMILY_4010,
     FAMILY_MAX_ZONES,
@@ -46,6 +52,7 @@ from .protocol import (
     cmd_pgm,
     cmd_siren,
     decode_zone_names,
+    parse_event_record,
     parse_hex_bytes,
     parse_status,
     raise_for_ack,
@@ -77,6 +84,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.family = family
         self.model_key = model_key
         self.zone_names: dict[int, str] = {}
+        # Eventos mais recentes já lidos (limitado a
+        # EVENT_ENTITY_RECENT_COUNT, ordenados do mais novo pro mais
+        # velho por data/hora real do registro — NÃO pela ordem de
+        # endereço, que não corresponde à ordem cronológica, confirmado
+        # em campo). O serviço de leitura devolve a lista completa (até
+        # 256) na resposta; só o que fica aqui, nos atributos da
+        # entidade, é truncado.
+        self.recent_events: list[dict] = []
         # Rastreamento local do modo de ativação (stay/away), pois o status
         # da central não informa o modo, apenas se está ativada ou não.
         self.armed_home_mode: dict[str, bool] = {"CENTRAL": False, "A": False, "B": False, "C": False, "D": False}
@@ -169,8 +184,35 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         return FAMILY_PGM_COUNT[self.family]
 
     @property
-    def supports_zone_names(self) -> bool:
-        return self.family == FAMILY_4010
+    def supports_extended_eeprom(self) -> bool:
+        """Se este modelo/firmware tem acesso ao comando 0x5C para ler
+        nomes de zona e o log de eventos via EEPROM.
+
+        Extraído literalmente da tela de ajuda "Senha Acesso Remoto" do
+        app oficial AMT Mobile: ela lista exatamente quais centrais NÃO
+        precisam dessa senha adicional para sincronizar nomes/eventos —
+        e, por extensão, são as que têm esse caminho (0x5C) liberado.
+
+        Fora dessa lista — inclusive a AMT 1016 NET com qualquer firmware,
+        mesmo sendo suportada normalmente pelo resto desta integração —
+        a central usa um protocolo legado diferente (comando 0xE7), que
+        não implementamos aqui por ser mais arriscado (já causou um
+        travamento real de central durante os testes). Ver
+        README_DETALHADO.md, seção de limitações conhecidas.
+        """
+        if self.data is None:
+            return False
+        if self.model_key not in EEPROM_EXTENDED_MIN_FIRMWARE:
+            return False
+        minimo = EEPROM_EXTENDED_MIN_FIRMWARE[self.model_key]
+        if minimo is None:
+            return True
+        try:
+            major_str, minor_str = self.data.firmware.split(".")
+            atual = (int(major_str), int(minor_str))
+        except (ValueError, AttributeError):
+            return False
+        return atual >= minimo
 
     def zone_enabled_by_default(self, zone: int) -> bool:
         """Se a zona deve nascer habilitada no registro de entidades.
@@ -704,7 +746,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # ------------------------------------------------------------------
     async def async_refresh_zone_names(self) -> dict[int, str]:
         """Lê os nomes de todas as zonas gravados na EEPROM da central."""
-        if not self.supports_zone_names:
+        if not self.supports_extended_eeprom:
             return {}
 
         names: dict[int, str] = {}
@@ -728,6 +770,64 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.zone_names = names
         self.async_update_listeners()
         return names
+
+    # ------------------------------------------------------------------
+    # Log de eventos (EEPROM, comando 0x5C — mesmos modelos/firmwares que
+    # suportam nomes de zona, ver supports_extended_eeprom)
+    # ------------------------------------------------------------------
+    async def async_read_events(self) -> list[dict]:
+        """Lê o log de eventos inteiro (256 registros, 0x1800-0x2000) e
+        devolve todos, ordenados do mais recente pro mais antigo por
+        data/hora real de cada registro.
+
+        IMPORTANTE: a ordem dos endereços na EEPROM **não** corresponde à
+        ordem cronológica dos eventos (confirmado em campo) — por isso
+        sempre lemos o log inteiro e ordenamos pela data/hora decodificada
+        de cada registro, em vez de tentar ler só "os últimos N" por
+        endereço (que poderia devolver dados desatualizados ou fora de
+        ordem).
+
+        Também atualiza ``self.recent_events`` com os
+        ``EVENT_ENTITY_RECENT_COUNT`` mais recentes, para a entidade
+        "Últimos eventos" — independente de quantos eventos válidos
+        existirem no total.
+        """
+        if not self.supports_extended_eeprom:
+            raise HomeAssistantError(
+                "Este modelo/firmware não tem acesso à leitura de eventos "
+                "nesta integração (ver README, seção de modelos suportados)"
+            )
+
+        registros: list[dict] = []
+        endereco = EVENT_LOG_BASE_ADDRESS
+        fim = EVENT_LOG_BASE_ADDRESS + EVENT_LOG_TOTAL_BYTES
+        while endereco < fim:
+            tamanho = min(EVENT_LOG_CHUNK_BYTES, fim - endereco)
+            frame = cmd_eeprom_read(self._password, endereco, tamanho)
+            try:
+                response = await self.client.send_command(
+                    frame, context=f"ler eventos 0x{endereco:04X}"
+                )
+            except PanelConnectionError as err:
+                raise UpdateFailed(str(err)) from err
+            if not response.content or response.content[0] in (0xE0, 0xE1, 0xE2, 0xE5):
+                raise UpdateFailed("A central recusou a leitura do log de eventos")
+            # content[0] = índice do usuário que enviou o comando; resto = dados
+            dados = response.content[1:]
+            for i in range(0, len(dados), EVENT_RECORD_LEN):
+                registro = dados[i : i + EVENT_RECORD_LEN]
+                if len(registro) < EVENT_RECORD_LEN:
+                    break
+                evento = parse_event_record(bytes(registro))
+                if evento is not None:
+                    registros.append(evento)
+            endereco += tamanho
+
+        registros.sort(key=lambda e: e["data_hora"], reverse=True)
+
+        self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
+        self.async_update_listeners()
+        return registros
 
 
 def _build_status_frame(password: str, family: str) -> bytes:

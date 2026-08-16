@@ -34,7 +34,7 @@ async def async_setup_entry(
     entities.append(IntelbrasBypassOpenOrViolatedZonesButton(coordinator, entry))
     entities.append(IntelbrasClearBypassButton(coordinator, entry))
 
-    if coordinator.supports_zone_names:
+    if coordinator.supports_extended_eeprom:
         entities.append(IntelbrasSyncZoneNamesButton(coordinator, entry))
 
     async_add_entities(entities)
