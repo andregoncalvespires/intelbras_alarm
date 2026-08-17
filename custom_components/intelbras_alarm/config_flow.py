@@ -17,11 +17,15 @@ from .const import (
     CONF_MODEL,
     CONF_PARTITION_PASSWORDS,
     CONF_PASSWORD,
+    CONF_RECEPTOR_IP_ENABLED,
+    CONF_RECEPTOR_IP_PORT,
     DEFAULT_CODE_REQUIRED_ARM,
     DEFAULT_CODE_REQUIRED_DISARM,
     DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_PORT,
     DEFAULT_POLLING_INTERVAL,
+    DEFAULT_RECEPTOR_IP_ENABLED,
+    DEFAULT_RECEPTOR_IP_PORT,
     DOMAIN,
     FAMILY_4010,
     InvalidZoneSpec,
@@ -44,6 +48,8 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Optional(CONF_CODE_REQUIRED_ARM, default=DEFAULT_CODE_REQUIRED_ARM): bool,
         vol.Optional(CONF_CODE_REQUIRED_DISARM, default=DEFAULT_CODE_REQUIRED_DISARM): bool,
         vol.Optional(CONF_ENABLED_ZONES, default=DEFAULT_ENABLED_ZONES_SPEC): str,
+        vol.Optional(CONF_RECEPTOR_IP_ENABLED, default=DEFAULT_RECEPTOR_IP_ENABLED): bool,
+        vol.Optional(CONF_RECEPTOR_IP_PORT, default=DEFAULT_RECEPTOR_IP_PORT): vol.Coerce(int),
     }
 )
 
@@ -123,6 +129,8 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_CODE_REQUIRED_ARM: user_input[CONF_CODE_REQUIRED_ARM],
                     CONF_CODE_REQUIRED_DISARM: user_input[CONF_CODE_REQUIRED_DISARM],
                     CONF_ENABLED_ZONES: user_input[CONF_ENABLED_ZONES],
+                    CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
+                    CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
                 }
                 if detected["family"] == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -239,6 +247,8 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_CODE_REQUIRED_ARM: user_input[CONF_CODE_REQUIRED_ARM],
                     CONF_CODE_REQUIRED_DISARM: user_input[CONF_CODE_REQUIRED_DISARM],
                     OPT_POLLING_INTERVAL: user_input[OPT_POLLING_INTERVAL],
+                    CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
+                    CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
                 }
                 if self.config_entry.data.get("family") == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -272,6 +282,20 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     OPT_POLLING_INTERVAL,
                     default=options.get(OPT_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL),
                 ): vol.All(vol.Coerce(float), vol.Range(min=MIN_POLLING_INTERVAL, max=MAX_POLLING_INTERVAL)),
+                # Diferente de CONF_ENABLED_ZONES acima, ligar/desligar o
+                # Receptor IP aqui FUNCIONA de verdade: não depende de
+                # nenhum "padrão de entidade" travado na criação — é só
+                # iniciar ou parar um servidor toda vez que a integração
+                # recarrega, o que já acontece automaticamente quando
+                # qualquer opção muda.
+                vol.Optional(
+                    CONF_RECEPTOR_IP_ENABLED,
+                    default=data.get(CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED),
+                ): bool,
+                vol.Optional(
+                    CONF_RECEPTOR_IP_PORT,
+                    default=data.get(CONF_RECEPTOR_IP_PORT, DEFAULT_RECEPTOR_IP_PORT),
+                ): vol.Coerce(int),
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
@@ -318,6 +342,8 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
         new_data[CONF_PASSWORD] = self._pending_data[CONF_PASSWORD]
         new_data[CONF_CODE_REQUIRED_ARM] = self._pending_data[CONF_CODE_REQUIRED_ARM]
         new_data[CONF_CODE_REQUIRED_DISARM] = self._pending_data[CONF_CODE_REQUIRED_DISARM]
+        new_data[CONF_RECEPTOR_IP_ENABLED] = self._pending_data[CONF_RECEPTOR_IP_ENABLED]
+        new_data[CONF_RECEPTOR_IP_PORT] = self._pending_data[CONF_RECEPTOR_IP_PORT]
         if CONF_PARTITION_PASSWORDS in self._pending_data:
             new_data[CONF_PARTITION_PASSWORDS] = self._pending_data[CONF_PARTITION_PASSWORDS]
         self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)

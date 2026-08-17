@@ -10,7 +10,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IntelbrasAlarmData
-from .const import DOMAIN, MANUFACTURER
+from .const import CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED, DOMAIN, MANUFACTURER
 from .coordinator import IntelbrasAlarmCoordinator
 
 
@@ -48,6 +48,8 @@ async def async_setup_entry(
             ),
             IntelbrasLastCommandResultSensor(coordinator, entry),
             IntelbrasRecentEventsSensor(coordinator, entry),
+            IntelbrasReceptorLastEventSensor(coordinator, entry),
+            IntelbrasReceptorHeartbeatSensor(coordinator, entry),
         ]
     )
 
@@ -245,4 +247,98 @@ class IntelbrasRecentEventsSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], 
                 for ev in eventos
             ]
         }
+
+
+class IntelbrasReceptorLastEventSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Último evento recebido via Receptor IP — a central empurra sozinha,
+    em tempo real, sem a integração precisar perguntar (ver receptor_ip.py).
+
+    Diferente de "Últimos eventos" (que só existe em alguns
+    modelos/firmwares e depende de chamar o serviço `read_events` para
+    atualizar), esta entidade só existe se o Receptor IP estiver
+    **habilitado** na configuração — e atualiza sozinha, assim que a
+    central manda algo, sem precisar de nenhuma ação do usuário.
+
+    Estado: descrição do evento concatenada com partição e zona/usuário,
+    quando fazem sentido pro evento em questão (nem todo evento tem os
+    três — ex.: "Teste periódico" não tem zona nem partição). Código e
+    data/hora ficam nos atributos, como pedido.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Último evento (Receptor IP)"
+    _attr_icon = "mdi:access-point-network"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_receptor_last_event"
+        self._attr_device_info = _device_info(entry)
+        self._enabled = entry.data.get(CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED)
+
+    @property
+    def available(self) -> bool:
+        return self._enabled
+
+    @property
+    def native_value(self) -> str | None:
+        evento = self.coordinator.receptor_last_event
+        if evento is None:
+            return "Nenhum evento recebido ainda"
+        partes = [evento["descricao"]]
+        if evento["particao"] != "-":
+            partes.append(f"Partição {evento['particao']}")
+        if evento["zona_usuario"] > 0:
+            partes.append(f"Zona/Usuário {evento['zona_usuario']}")
+        # Mantém dentro do limite de 255 caracteres de um estado do HA —
+        # folgado aqui, mas evita qualquer risco se a descrição crescer.
+        return " — ".join(partes)[:255]
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        evento = self.coordinator.receptor_last_event
+        if evento is None:
+            return {}
+        attrs: dict = {
+            "codigo": evento["codigo"],
+            "conta": evento["conta"],
+            "particao": evento["particao"],
+            "zona_usuario": evento["zona_usuario"],
+        }
+        if evento["data_hora_evento"] is not None:
+            attrs["data_hora_evento"] = evento["data_hora_evento"].strftime("%d/%m/%Y %H:%M:%S")
+        return attrs
+
+
+class IntelbrasReceptorHeartbeatSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Data/hora do último "sinal de vida" recebido via Receptor IP.
+
+    Atualiza tanto em um heartbeat "puro" (comando 0xF7, que não carrega
+    nenhuma data/hora própria) quanto em qualquer evento recebido — os
+    dois indicam igualmente que a conexão está viva. A data/hora usada é
+    sempre a **deste servidor** (Home Assistant), não a da central — o
+    0xF7 não tem campo de data/hora nenhum, e essa foi a escolha
+    confirmada com o usuário (mesmo critério dos scripts de referência
+    testados antes desta funcionalidade ser incorporada à integração).
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Último sinal de vida (Receptor IP)"
+    _attr_icon = "mdi:heart-pulse"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_receptor_last_heartbeat"
+        self._attr_device_info = _device_info(entry)
+        self._enabled = entry.data.get(CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED)
+
+    @property
+    def available(self) -> bool:
+        return self._enabled
+
+    @property
+    def native_value(self):
+        return self.coordinator.receptor_last_heartbeat
 

@@ -16,6 +16,8 @@ CONF_PGM_COUNT = "pgm_count"
 CONF_CODE_REQUIRED_ARM = "code_required_arm"
 CONF_CODE_REQUIRED_DISARM = "code_required_disarm"
 CONF_ENABLED_ZONES = "enabled_zones"
+CONF_RECEPTOR_IP_ENABLED = "receptor_ip_enabled"
+CONF_RECEPTOR_IP_PORT = "receptor_ip_port"
 
 OPT_POLLING_INTERVAL = "polling_interval"
 
@@ -23,6 +25,12 @@ DEFAULT_PORT = 9009
 DEFAULT_POLLING_INTERVAL = 0.25  # segundos, sugerido pela Intelbras/AMT Mobile
 MIN_POLLING_INTERVAL = 0.15
 MAX_POLLING_INTERVAL = 10.0
+DEFAULT_RECEPTOR_IP_ENABLED = False
+# Porta diferente da 9009 (usada pela nossa conexão de CLIENTE) de propósito
+# — aqui é o oposto, NÓS ficamos escutando e a central se conecta em nós.
+# Mesmo valor usado nos scripts de referência testados pelo usuário antes
+# desta funcionalidade ser incorporada à integração.
+DEFAULT_RECEPTOR_IP_PORT = 9010
 # Timeout POR TENTATIVA (conectar OU esperar resposta a UM comando/consulta
 # já na conexão estabelecida). Antes desta revisão, os 8s do item 5 da
 # documentação ISECNet eram usados aqui — mas esse valor foi pensado para
@@ -244,6 +252,92 @@ EEPROM_EXTENDED_MIN_FIRMWARE: dict[str, tuple[int, int] | None] = {
     MODEL_1016_NET: (4, 1),
     MODEL_2018_SMART: None,
     MODEL_AMN24_NET: None,
+}
+
+# ---------------------------------------------------------------------------
+# Receptor IP — tabela completa de códigos de evento (código de 4 dígitos:
+# qualificador + código Contact-ID de 3 dígitos -> descrição).
+#
+# Diferente da tabela usada na leitura de eventos via EEPROM
+# (protocol.EVENT_CODE_TABLE, limitada aos 17 bytes brutos já observados
+# em captura real), o protocolo Receptor IP transmite o código de 4
+# dígitos por extenso, dígito a dígito — então os 65 códigos abaixo já
+# são todos diretamente utilizáveis, sem depender de observar cada um
+# numa captura real primeiro.
+#
+# Fonte: tela de configuração de eventos do software oficial "Receptor
+# IP" da Intelbras (65-73 registros, ver capturas de tela cruzadas em
+# versões anteriores desta documentação), validada de forma independente
+# contra o projeto open-source amt2018 (Felipe Magno de Almeida, Boost
+# Software License) e dois scripts de referência do usuário desta
+# integração, testados em hardware real.
+# ---------------------------------------------------------------------------
+RECEPTOR_IP_EVENT_TABLE: dict[str, str] = {
+    "1100": "Emergência Médica",
+    "1110": "Disparo ou pânico de incêndio",
+    "1120": "Pânico audível ou silencioso",
+    "1121": "Senha de coação",
+    "1122": "Pânico silencioso",
+    "1130": "Disparo de zona",
+    "1131": "Disparo de cerca elétrica",
+    "1133": "Disparo de zona 24h",
+    "1145": "Tamper do teclado",
+    "1146": "Disparo silencioso",
+    "1147": "Falha da supervisão Smart/RF",
+    "1300": "Sobrecarga na saída auxiliar",
+    "1301": "Falha na rede elétrica",
+    "1302": "Bateria principal baixa ou em curto-circuito",
+    "1305": "Reset pelo modo de programação",
+    "1306": "Alteração da programação do painel",
+    "1311": "Bateria principal ausente ou invertida",
+    "1321": "Corte ou curto-circuito na sirene",
+    "1322": "Toque de porteiro",
+    "1333": "Problema em teclado ou receptor",
+    "1351": "Falha na linha telefônica",
+    "1354": "Falha ao comunicar evento",
+    "1371": "Corte da fiação dos sensores",
+    "1372": "Curto-circuito na fiação dos sensores",
+    "1383": "Tamper do sensor",
+    "1384": "Bateria baixa de sensor sem fio",
+    "1401": "Desativação pelo usuário",
+    "1403": "Auto-desativação",
+    "1407": "Desativação via computador ou telefone",
+    "1410": "Acesso remoto pelo software de download/upload",
+    "1413": "Falha no download",
+    "1422": "Acionamento de PGM",
+    "1461": "Senha incorreta",
+    "1570": "Anulação temporária de zona",
+    "1573": "Anulação por disparo",
+    "1601": "Teste manual",
+    "1602": "Teste periódico",
+    "1616": "Solicitação de manutenção",
+    "1621": "Reset do buffer de eventos",
+    "1624": "Log de eventos cheio",
+    "1625": "Data e hora foram reiniciadas",
+    "3110": "Restauração de incêndio",
+    "3130": "Restauração disparo de zona",
+    "3131": "Restauração de disparo de cerca elétrica",
+    "3133": "Restauração disparo de zona 24h",
+    "3145": "Restauração tamper do teclado",
+    "3146": "Restauração disparo silencioso",
+    "3147": "Restauração da supervisão Smart/RF",
+    "3300": "Restauração sobrecarga na saída auxiliar",
+    "3301": "Restauração falha na rede elétrica",
+    "3302": "Restauração bat. princ. baixa ou em curto-circuito",
+    "3311": "Restauração bat. princ. ausente ou invertida",
+    "3321": "Restauração corte ou curto-circuito na sirene",
+    "3333": "Restauração problema em teclado ou receptor",
+    "3351": "Restauração linha telefônica",
+    "3371": "Restauração corte da fiação dos sensores",
+    "3372": "Restauração curto-circuito na fiação dos sensores",
+    "3383": "Restauração tamper do sensor",
+    "3384": "Restauração bateria baixa de sensor sem fio",
+    "3401": "Ativação pelo usuário",
+    "3403": "Auto-ativação",
+    "3407": "Ativação via computador ou telefone",
+    "3408": "Ativação por uma tecla",
+    "3422": "Desacionamento de PGM",
+    "3456": "Ativação parcial",
 }
 
 # ---------------------------------------------------------------------------

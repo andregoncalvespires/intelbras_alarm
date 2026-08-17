@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     ACK_OK,
@@ -92,6 +93,15 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # 256) na resposta; só o que fica aqui, nos atributos da
         # entidade, é truncado.
         self.recent_events: list[dict] = []
+        # Último evento recebido via Receptor IP (empurrado pela própria
+        # central, tempo real — diferente de recent_events, que vem da
+        # leitura sob demanda da EEPROM). None enquanto o recurso estiver
+        # desligado ou nenhum evento tiver chegado ainda.
+        self.receptor_last_event: dict | None = None
+        # Data/hora (deste servidor Home Assistant, não da central) do
+        # último sinal de vida recebido do Receptor IP — heartbeat (0xF7)
+        # ou qualquer evento, o que chegar primeiro/depois.
+        self.receptor_last_heartbeat: datetime | None = None
         # Rastreamento local do modo de ativação (stay/away), pois o status
         # da central não informa o modo, apenas se está ativada ou não.
         self.armed_home_mode: dict[str, bool] = {"CENTRAL": False, "A": False, "B": False, "C": False, "D": False}
@@ -828,6 +838,32 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
         self.async_update_listeners()
         return registros
+
+    # ------------------------------------------------------------------
+    # Receptor IP (eventos empurrados pela própria central, em tempo
+    # real — ver receptor_ip.py). Estes dois métodos são passados como
+    # callback pro ReceptorIPServer; não fazem nenhuma comunicação com a
+    # central por conta própria, só guardam o que chegou e notificam as
+    # entidades.
+    #
+    # A data/hora do "sinal de vida" é sempre a deste servidor (Home
+    # Assistant), não a da central — o heartbeat (0xF7) não carrega
+    # nenhuma data/hora, e foi assim que o usuário definiu (mesmo
+    # critério usado nos scripts de referência testados antes desta
+    # funcionalidade ser incorporada à integração). Usa
+    # ``dt_util.utcnow()`` (com fuso horário definido, UTC) em vez de
+    # ``datetime.now()`` porque a entidade correspondente usa
+    # ``device_class: timestamp``, que exige isso do Home Assistant —
+    # ele mesmo converte para o fuso local na exibição.
+    # ------------------------------------------------------------------
+    def on_receptor_event(self, evento: dict) -> None:
+        self.receptor_last_event = evento
+        self.receptor_last_heartbeat = dt_util.utcnow()
+        self.async_update_listeners()
+
+    def on_receptor_heartbeat(self) -> None:
+        self.receptor_last_heartbeat = dt_util.utcnow()
+        self.async_update_listeners()
 
 
 def _build_status_frame(password: str, family: str) -> bytes:

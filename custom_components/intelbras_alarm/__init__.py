@@ -9,9 +9,20 @@ from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 
 from .connection_state import async_load_connection_enabled
-from .const import CONF_MODEL, CONF_PARTITION_PASSWORDS, CONF_PASSWORD, DEFAULT_REQUEST_TIMEOUT, DOMAIN
+from .const import (
+    CONF_MODEL,
+    CONF_PARTITION_PASSWORDS,
+    CONF_PASSWORD,
+    CONF_RECEPTOR_IP_ENABLED,
+    CONF_RECEPTOR_IP_PORT,
+    DEFAULT_RECEPTOR_IP_ENABLED,
+    DEFAULT_RECEPTOR_IP_PORT,
+    DEFAULT_REQUEST_TIMEOUT,
+    DOMAIN,
+)
 from .coordinator import IntelbrasAlarmCoordinator
 from .panel_client import PanelClient
+from .receptor_ip import ReceptorIPServer
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +39,7 @@ PLATFORMS: list[Platform] = [
 class IntelbrasAlarmData:
     client: PanelClient
     coordinator: IntelbrasAlarmCoordinator
+    receptor_server: ReceptorIPServer | None = None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -77,8 +89,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "pulando a consulta inicial de status"
         )
 
+    # Receptor IP (opcional, desligado por padrão): servidor que fica
+    # esperando a CENTRAL se conectar NELE, empurrando eventos em tempo
+    # real — papéis invertidos em relação à conexão normal desta
+    # integração. Configurado na própria central (fora daqui), apontando
+    # para o IP do Home Assistant e a porta definida abaixo. Ver
+    # receptor_ip.py e o README, seção "Receptor IP".
+    receptor_server: ReceptorIPServer | None = None
+    if entry.data.get(CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED):
+        receptor_server = ReceptorIPServer(
+            host="0.0.0.0",
+            port=entry.data.get(CONF_RECEPTOR_IP_PORT, DEFAULT_RECEPTOR_IP_PORT),
+            expected_panel_ip=entry.data["host"],
+            on_event=coordinator.on_receptor_event,
+            on_heartbeat=coordinator.on_receptor_heartbeat,
+        )
+        try:
+            await receptor_server.async_start()
+        except OSError as err:
+            _LOGGER.error(
+                "Receptor IP: não foi possível abrir a porta %s (%s) — o restante da "
+                "integração continua funcionando normalmente, só a recepção de eventos "
+                "em tempo real fica indisponível. Verifique se a porta já está em uso "
+                "ou se precisa ser exposta (Docker/HAOS).",
+                entry.data.get(CONF_RECEPTOR_IP_PORT, DEFAULT_RECEPTOR_IP_PORT),
+                err,
+            )
+            receptor_server = None
+
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = IntelbrasAlarmData(client=client, coordinator=coordinator)
+    hass.data[DOMAIN][entry.entry_id] = IntelbrasAlarmData(
+        client=client, coordinator=coordinator, receptor_server=receptor_server
+    )
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
@@ -95,6 +137,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         data: IntelbrasAlarmData = hass.data[DOMAIN].pop(entry.entry_id)
+        if data.receptor_server is not None:
+            await data.receptor_server.async_stop()
         await data.client.disconnect()
     return unload_ok
+
 

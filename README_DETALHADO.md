@@ -385,6 +385,148 @@ dispositivo (não como entidades separadas), visíveis em
 
 ---
 
+## Receptor IP — eventos empurrados pela central em tempo real
+
+Diferente de todo o resto desta integração — onde **nós** somos o
+cliente, conectando na central e perguntando o status — este recurso
+inverte os papéis: a central é configurada (fora desta integração, no
+teclado ou no app oficial, tela "Configurar central" → conta de
+monitoramento IP) para conectar **nela mesma** num endereço/porta que
+apontamos aqui. A partir daí, ela empurra eventos sozinha, sem
+precisarmos ficar perguntando — o mesmo mecanismo usado por softwares de
+monitoramento profissional (ex.: "Receptor IP" da própria Intelbras).
+
+**Desligado por padrão** — ver `CONF_RECEPTOR_IP_ENABLED`/
+`CONF_RECEPTOR_IP_PORT` em `const.py`, disponível tanto na configuração
+inicial quanto na tela "Configurar" (reconfiguração). Diferente do campo
+"zonas habilitadas por padrão" (que só funciona na configuração
+inicial — ver seção acima), ligar/desligar isso na reconfiguração
+**funciona de verdade**: não depende de nenhum `entity_registry_
+enabled_default` travado na criação, é só iniciar ou parar um servidor
+`asyncio` a cada recarregamento da integração, e qualquer mudança de
+opção já dispara esse recarregamento automaticamente.
+
+### Protocolo — fonte e estrutura confirmada
+
+Documentado na seção 8 ("Comandos do Receptor IP") do documento oficial
+*"Descrição de Comandos de Protocolo ISECnet Centrais de Alarmes –
+Intelbras Receptor IP"*, válido explicitamente para AMT2018E, AMT2018EG,
+AMT 1016 NET e AMT 4010 SMART — **mesma estrutura de protocolo para
+todos os modelos**, ao contrário da leitura de EEPROM (nomes de zona/
+eventos via `0x5C`), que varia por modelo/firmware.
+
+Cada exemplo do documento foi validado byte a byte nesta implementação
+(incluindo o checksum, que usa a **mesma função `checksum()`** já usada
+em todo o resto do protocolo — complemento do XOR de tudo, **incluindo**
+o byte de "Nº Bytes", confirmado batendo 5 exemplos diferentes do
+documento). O framing `[Nº Bytes][Comando][Conteúdo][Checksum]` também é
+o mesmo — `receptor_ip.py` reaproveita `protocol.parse_frame()`
+diretamente, sem duplicar lógica.
+
+**Comando `0x94`** — a central manda isso **assim que conecta**, antes
+de qualquer evento. Se não recebermos dentro de `HANDSHAKE_TIMEOUT`
+(15s, valor nosso — o documento não especifica um tempo para o lado do
+receptor), a conexão é encerrada. Conteúdo (6 bytes):
+```
+[Canal(1)] [ID1][ID2] [MAC1][MAC2][MAC3]
+```
+Canal: `0x45`='E'=Ethernet, `0x47`='G'=GPRS SIM1, `0x48`='H'=GPRS SIM2.
+Conta: cada byte = 2 dígitos (nibble alto + nibble baixo). MAC: últimos
+3 bytes do MAC da central.
+
+**Comando `0xB0`** (evento sem data/hora, 16 bytes de conteúdo) e
+**`0xB4`** (mesmo formato + 12 bytes de data/hora, 28 bytes no total):
+```
+[CH/IP(1)] [Conta(4)] [M(1)][T(1)] [Qualificador(1)] [Código(3)]
+[Partição(2)] [Zona/Usuário(3)]                    -- (0xB0, 16 bytes)
+... + [Data eventoD,M,A,H,Mi,S(6)] [Data central D,M,A,H,Mi,S(6)]  -- (0xB4, +12 bytes)
+```
+- `CH/IP`: nibble alto = canal (1=Ethernet, 2=GPRS), nibble baixo = 1/2 —
+  não usado por esta integração além de log de depuração.
+- `Conta`, `M`, `T`, `Qualificador`, `Código`, `Partição`, `Zona/Usuário`:
+  **um dígito decimal por byte**, onde o dígito 0 é enviado como `0x0A`
+  em vez de `0x00` — confirmado em três fontes independentes (o
+  documento oficial, um projeto open-source de terceiros chamado
+  "amt2018" de autoria de Felipe Magno de Almeida — Boost Software
+  License —, e dois scripts de referência do usuário, testados em
+  hardware real).
+- `M`,`T` são sempre `01`,`08` — são os dois dígitos fixos do "tipo de
+  mensagem 18" do Contact-ID, não um valor combinado.
+- `Qualificador`: `1`=evento novo, `3`=restauração — **é exatamente o
+  mesmo "prefixo 1/3" que já tínhamos decifrado empiricamente pra tabela
+  de eventos da leitura via EEPROM**, só que aqui é um campo separado e
+  documentado oficialmente, não uma dedução.
+- `Código`: 3 dígitos Contact-ID — concatenado com o qualificador forma
+  o código de 4 dígitos usado em `const.RECEPTOR_IP_EVENT_TABLE` (ex.:
+  qualificador `3` + código `401` = `"3401"` = "Ativação pelo usuário").
+- **As 6 datas/horas do `0xB4` são valor bruto binário** (ex.: dia 15 =
+  byte `0x0F`), **não** o esquema de dígito-por-byte do resto do frame —
+  confirmado batendo o exemplo do documento (`0F 06 11 0C 03 18` →
+  15/06/17 12:03:24) byte a byte. Só a data/hora do **evento** é usada
+  por esta integração; a data/hora **da central** (últimos 6 bytes do
+  0xB4) não é usada aqui.
+
+**Comando `0xF7`** (heartbeat): um byte sozinho, **sem** o framing
+`[Nº Bytes][Comando][Conteúdo][Checksum]` normal — nem conteúdo, nem
+checksum. Tratado como caso especial em `receptor_ip.py` antes de tentar
+interpretar como um frame completo.
+
+**Comandos `0xB5`, `0xB6`, `0xB7`** (foto, zona/usuário de 4 dígitos,
+nomes por extenso): o próprio documento marca `0xB6` e `0xB7` como
+*"Comando não utilizado por nenhuma central"* — não implementados
+ativamente; qualquer coisa não reconhecida recebe um ACK genérico e é só
+registrada em log de depuração, sem processamento específico.
+
+Todos os comandos recebidos (reconhecidos ou não) recebem um ACK simples
+(`0xFE`, 1 byte, sem framing) — é o que o protocolo espera de volta para
+não reenviar/travar.
+
+### Segurança — sem autenticação própria no protocolo
+
+O comando `0x94` só **informa** a conta configurada na central, não é
+uma senha nem um token — não há nenhum mecanismo de autenticação real
+neste protocolo. A única proteção aplicada por esta integração é
+**recusar imediatamente qualquer conexão que não venha do IP da central
+configurado** (`entry.data["host"]`, o mesmo endereço já usado para a
+conexão de cliente normal) — reduz bastante o risco numa rede doméstica
+típica, mas não é uma autenticação criptográfica; a segurança real
+continua dependendo da rede local estar protegida.
+
+### Entidades
+
+- **"Último evento (Receptor IP)"** (`sensor`): estado = descrição do
+  evento + partição + zona/usuário concatenados (só quando fazem sentido
+  para aquele evento específico — nem todo evento tem partição/zona,
+  ex.: "Teste periódico"). Atributos: `codigo` (4 dígitos), `conta`,
+  `particao`, `zona_usuario`, e `data_hora_evento` (só presente quando o
+  evento veio via `0xB4`, com data/hora embutida).
+- **"Último sinal de vida (Receptor IP)"** (`sensor`, `device_class:
+  timestamp`): data/hora **deste servidor Home Assistant** (não da
+  central — o heartbeat não carrega nenhuma data/hora própria) do último
+  contato recebido, seja heartbeat puro ou qualquer evento. Usa
+  `dt_util.utcnow()` (com fuso definido) em vez de `datetime.now()`,
+  exigência do Home Assistant para esse `device_class`.
+
+Ambas ficam **indisponíveis** (não deixam de existir, só ficam
+indisponíveis) enquanto o Receptor IP estiver desligado na configuração.
+
+### Limitações conhecidas deste recurso
+
+- Precisa de configuração **na própria central**, fora do alcance desta
+  integração — documentado acima, mas depende do usuário fazer certo.
+- Em instalações Docker/HAOS, a porta escolhida precisa ser exposta/
+  mapeada manualmente para a central conseguir alcançar — fora do
+  controle desta integração.
+- É um canal **adicional**: não substitui a conexão de cliente normal
+  (armar/desarmar/status continuam exatamente como antes).
+- `HANDSHAKE_TIMEOUT` (15s) e `IDLE_TIMEOUT` (180s) em `receptor_ip.py`
+  são valores escolhidos por esta integração, não documentados
+  oficialmente para o lado do receptor — podem precisar de ajuste se, na
+  prática, alguma central levar mais tempo que isso para se identificar
+  ou para mandar o próximo heartbeat.
+
+---
+
 ## Fidelidade ao documento oficial (nomenclatura, `device_class`, estados)
 
 Comparação entre o que a documentação ISECNet Rev. 15 descreve e o que a

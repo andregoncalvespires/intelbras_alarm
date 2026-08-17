@@ -77,8 +77,12 @@ adicione a URL deste repositório (categoria Integração) → instale
    (intervalos e/ou números separados por `;`). Padrão: `1-8;17-24`. As
    demais zonas continuam existindo, só ficam desabilitadas até você
    habilitá-las manualmente em Configurações → Entidades.
-5. O **modelo é detectado automaticamente** — sem campo manual.
-6. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
+5. Opcional: **habilitar recepção de eventos (Receptor IP)** e a porta de
+   escuta (padrão `9010`) — ver seção própria mais abaixo. Desligado por
+   padrão; precisa de configuração adicional **na própria central**, fora
+   desta integração.
+6. O **modelo é detectado automaticamente** — sem campo manual.
+7. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
    diferentes por partição (A/B/C/D), se sua central tiver — opcional,
    deixe em branco para usar a senha principal em todas.
 
@@ -94,9 +98,10 @@ Depois de configurada, em **Configurar** na própria integração (Ajustes →
 Dispositivos e Serviços → Intelbras Alarm → Configurar) dá pra ajustar,
 **sem remover e reconfigurar do zero**: a senha principal (validada contra
 a central antes de salvar), as senhas por partição (4010), as opções de
-exigir senha e o intervalo de polling. IP, porta, modelo e zonas
-habilitadas por padrão não são editáveis ali (esse último só funciona na
-configuração inicial) — para isso, remova e reconfigure.
+exigir senha, **habilitar/desabilitar o Receptor IP e sua porta**, e o
+intervalo de polling. IP, porta, modelo e zonas habilitadas por padrão
+não são editáveis ali (esse último só funciona na configuração inicial)
+— para isso, remova e reconfigure.
 
 ---
 
@@ -138,8 +143,10 @@ configuração inicial) — para isso, remova e reconfigure.
   zonas abertas/violadas/anuladas/com bateria baixa (sensores sem fio, com
   a lista de quais zonas nos atributos), **"Último comando"** (rastreia
   a última ação enviada e a resposta da central, separado da consulta de
-  status normal), e **"Últimos eventos"** (só nos modelos/firmwares da
-  tabela abaixo — ver seção própria mais adiante).
+  status normal), **"Últimos eventos"** (só nos modelos/firmwares da
+  tabela abaixo — ver seção própria mais adiante), e, se o Receptor IP
+  estiver habilitado, **"Último evento (Receptor IP)"** e **"Último sinal
+  de vida (Receptor IP)"** (ver seção própria).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —
@@ -210,6 +217,47 @@ real de cada evento (a ordem de endereço na memória **não** corresponde
 à ordem cronológica, confirmado em testes reais), então o resultado é
 sempre consistente, não importa quantas vezes ou com que frequência você
 chamar.
+
+## Receptor IP — eventos em tempo real (opcional)
+
+Além da leitura sob demanda acima, a central pode ser configurada para
+**empurrar eventos sozinha, em tempo real**, sem a integração precisar
+perguntar — o modo "Receptor IP" já usado por softwares de monitoramento
+profissional. Aqui os papéis se invertem: a central vira **cliente**,
+conectando nela mesma no Home Assistant.
+
+**Desligado por padrão.** Para habilitar:
+
+1. Na configuração da integração (inicial ou em "Configurar"), marque
+   **"Habilitar recepção de eventos (Receptor IP)"** e confira a porta
+   (padrão `9010`, diferente da `9009` usada pela conexão normal desta
+   integração).
+2. **Na própria central** (pelo teclado, ou pelo app oficial AMT Mobile
+   → editar central → conta/monitoramento IP) — **fora desta
+   integração** — cadastre uma conta apontando para o **IP do seu Home
+   Assistant** e a porta escolhida acima.
+3. Se o Home Assistant roda em Docker ou HAOS, essa porta precisa estar
+   **exposta/mapeada** para a central conseguir alcançar — confira a
+   documentação da sua instalação.
+
+Duas entidades novas, presentes sempre (ficam **indisponíveis** enquanto
+o recurso estiver desligado na configuração):
+
+- **"Último evento (Receptor IP)"**: descrição do evento mais recente,
+  já com partição e zona/usuário concatenados quando fazem sentido para
+  aquele evento (ex.: *"Ativação pelo usuário — Partição A — Zona/Usuário
+  4"*). Código, conta e data/hora ficam nos atributos.
+- **"Último sinal de vida (Receptor IP)"**: data/hora (deste Home
+  Assistant) do último contato da central — atualiza tanto num
+  "heartbeat" simples quanto em qualquer evento recebido. Útil para
+  confirmar que a conexão está viva.
+
+> ⚠️ **Este protocolo não tem senha nem autenticação própria.** A única
+> proteção que esta integração aplica é aceitar conexões **só do IP da
+> central configurado nesta integração** — qualquer outra origem é
+> recusada imediatamente. Isso reduz bastante o risco numa rede
+> doméstica normal, mas não é uma autenticação de verdade; mantenha sua
+> rede local segura.
 
 ## Dicas de uso
 
