@@ -406,6 +406,32 @@ enabled_default` travado na criação, é só iniciar ou parar um servidor
 `asyncio` a cada recarregamento da integração, e qualquer mudança de
 opção já dispara esse recarregamento automaticamente.
 
+### Configuração na central (fora desta integração)
+
+Habilitar a opção nesta integração só prepara o **lado que escuta** — a
+central precisa ser configurada separadamente para saber que deve se
+conectar aqui. Passo a passo pelo app **AMT Remoto** (o app de
+configuração/instalador, diferente do AMT Mobile usado no dia a dia):
+
+1. **Comunicação → Monitoramento IP → Servidor 2**:
+   - `IP`: endereço IP do Home Assistant
+   - `Porta`: a mesma configurada em `CONF_RECEPTOR_IP_PORT` (`9010` por
+     padrão)
+   - Desmarcar **"Utilizar endereço DNS"** (a integração espera conexão
+     por IP direto, não resolve nome de domínio)
+2. **Comunicação → Modo de Reportagem**: `"Duplo IP"`
+3. **Ethernet → Configuração IP**:
+   - `"Transmitir sinal de link Ethernet a cada"`: `1 minuto` — é este
+     campo que controla a frequência do heartbeat (`0xF7`) que atualiza
+     a entidade "Último sinal de vida (Receptor IP)"
+   - `"Monitoramento do link (keep alive)"`: marcado
+
+Passo a passo confirmado pelo usuário desta integração, configurando uma
+central real. Se algum nome de campo ou caminho de menu tiver mudado em
+versões mais recentes do AMT Remoto, os nomes dos comandos/telas
+subjacentes (`0x94`, `0xB0`/`0xB4`, `0xF7`) continuam os mesmos — é só a
+localização na interface do app que pode variar.
+
 ### Protocolo — fonte e estrutura confirmada
 
 Documentado na seção 8 ("Comandos do Receptor IP") do documento oficial

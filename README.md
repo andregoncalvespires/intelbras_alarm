@@ -232,10 +232,19 @@ conectando nela mesma no Home Assistant.
    **"Habilitar recepção de eventos (Receptor IP)"** e confira a porta
    (padrão `9010`, diferente da `9009` usada pela conexão normal desta
    integração).
-2. **Na própria central** (pelo teclado, ou pelo app oficial AMT Mobile
-   → editar central → conta/monitoramento IP) — **fora desta
-   integração** — cadastre uma conta apontando para o **IP do seu Home
-   Assistant** e a porta escolhida acima.
+2. **Na própria central** — **fora desta integração** — configure-a para
+   apontar para o Home Assistant. Passo a passo pelo app **AMT Remoto**
+   (não confundir com o AMT Mobile, o app de uso do dia a dia):
+
+   - **Comunicação → Monitoramento IP → Servidor 2**:
+     - `IP` = endereço IP do seu Home Assistant
+     - `Porta` = `9010` (ou a porta que você escolheu no passo 1)
+     - **Desmarque** "Utilizar endereço DNS"
+   - **Comunicação → Modo de Reportagem**: selecione **"Duplo IP"**
+   - **Ethernet → Configuração IP**:
+     - "Transmitir sinal de link Ethernet a cada" = **1 minuto**
+     - "Monitoramento do link (keep alive)" = **marcado**
+
 3. Se o Home Assistant roda em Docker ou HAOS, essa porta precisa estar
    **exposta/mapeada** para a central conseguir alcançar — confira a
    documentação da sua instalação.
