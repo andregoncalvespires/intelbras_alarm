@@ -66,7 +66,8 @@ adicione a URL deste repositório (categoria Integração) → instale
 
 **Ajustes → Dispositivos e Serviços → Adicionar Integração → Intelbras Alarm**
 
-![Tela de configuração: IP, porta, senha e opções de exigir senha](docs/images/tela-configuracao.jpeg)
+![Tela de configuração: IP, porta, senha e opções de exigir senha](docs/images/tela-configuracao-1.png)
+![Tela de configuração, rolada para baixo: zonas habilitadas e opções do Receptor IP](docs/images/tela-configuracao-2.png)
 
 1. **IP** e **porta** da central (padrão `9009`).
 2. **Senha** (a mesma do app AMT Mobile, 4 a 6 dígitos).
@@ -243,7 +244,8 @@ conectando nela mesma no Home Assistant.
    - **Comunicação → Modo de Reportagem**: selecione **"Duplo IP"**
    - **Ethernet → Configuração IP**:
      - "Transmitir sinal de link Ethernet a cada" = **1 minuto**
-     - "Monitoramento do link (keep alive)" = **marcado**
+     - "Monitoramento do link (keep alive)" = **marcado**, se essa opção
+       existir no seu modelo (nem toda central tem esse campo)
 
 3. Se o Home Assistant roda em Docker ou HAOS, essa porta precisa estar
    **exposta/mapeada** para a central conseguir alcançar — confira a

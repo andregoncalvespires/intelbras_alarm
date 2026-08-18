@@ -54,7 +54,8 @@ referência caso algum problema seja relatado. Esta tabela vai sendo
 atualizada conforme outros usuários testarem e relatarem outros
 modelos/firmwares.
 
-![Tela de configuração da integração](docs/images/tela-configuracao.jpeg)
+![Tela de configuração da integração](docs/images/tela-configuracao-1.png)
+![Tela de configuração, rolada para baixo: zonas habilitadas e opções do Receptor IP](docs/images/tela-configuracao-2.png)
 
 ---
 
@@ -424,7 +425,10 @@ configuração/instalador, diferente do AMT Mobile usado no dia a dia):
    - `"Transmitir sinal de link Ethernet a cada"`: `1 minuto` — é este
      campo que controla a frequência do heartbeat (`0xF7`) que atualiza
      a entidade "Último sinal de vida (Receptor IP)"
-   - `"Monitoramento do link (keep alive)"`: marcado
+   - `"Monitoramento do link (keep alive)"`: marcado, **se essa opção
+     existir no seu modelo** — nem toda central tem esse campo
+     disponível no AMT Remoto; se não aparecer, siga sem ele, sem
+     problema
 
 Passo a passo confirmado pelo usuário desta integração, configurando uma
 central real. Se algum nome de campo ou caminho de menu tiver mudado em
