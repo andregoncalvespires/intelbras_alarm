@@ -8,6 +8,16 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.1]
+
+### Corrigido
+- `hacs.json`: removida a chave `domains`, não reconhecida pelo schema de
+  validação do HACS (`extra keys not allowed @ data['domains']`) — o
+  domínio já é detectado automaticamente a partir do `manifest.json`
+  dentro de `custom_components/`, não precisa (nem pode) ser declarado
+  aqui. Corrige a falha na validação `hacsjson` do workflow
+  `hacs/action`.
+
 ## [2.0.0] — Primeira versão pública
 
 Primeira versão liberada para a comunidade. Consolida meses de
