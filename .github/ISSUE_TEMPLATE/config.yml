@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 📖 Dúvidas de configuração/compatibilidade
+    url: https://github.com/andregoncalvespires/intelbras_alarm#readme
+    about: Confira o README antes de abrir uma issue — cobre modelos suportados, limitações conhecidas e configuração passo a passo

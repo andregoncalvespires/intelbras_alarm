@@ -43,7 +43,7 @@ de alarme por fora.
 | Modelo | Firmware | Observação |
 |---|---|---|
 | AMT 1016 NET | 3.1 | — |
-| AMT 2018 E/EG | 6.2 | — |
+| AMT 2018 E/EG | 4.7 | — |
 | AMT 4010 SMART | 5.2 | — |
 | AMT 4010 SMART | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. A leitura de campos (`protocol.py`) já é defensiva por padrão (`content[X] if len(content) > X else 0`), então uma resposta curta não derruba a integração — os campos ausentes naquela leitura específica ficam com valor padrão (zero/desligado) só naquele ciclo, e o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo. Efeito prático: possível oscilação rápida e passageira em alguma entidade, não uma falha permanente. |
 
@@ -435,6 +435,14 @@ central real. Se algum nome de campo ou caminho de menu tiver mudado em
 versões mais recentes do AMT Remoto, os nomes dos comandos/telas
 subjacentes (`0x94`, `0xB0`/`0xB4`, `0xF7`) continuam os mesmos — é só a
 localização na interface do app que pode variar.
+
+> 💡 **Rede com VLANs/segmentação**: diferente de toda a comunicação
+> normal desta integração (Home Assistant → central), o Receptor IP
+> inverte o sentido — é a **central** que abre a conexão em direção ao
+> **Home Assistant**. Em redes com separação por VLAN, isso costuma
+> exigir uma regra de firewall específica para esse sentido; uma regra
+> que só libera Home Assistant → central (já necessária para o resto da
+> integração) não cobre o Receptor IP.
 
 ### Protocolo — fonte e estrutura confirmada
 

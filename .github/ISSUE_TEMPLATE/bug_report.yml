@@ -1,0 +1,113 @@
+name: 🐛 Reportar um problema
+description: Algo não está funcionando como deveria
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por reportar! Pra eu conseguir investigar rápido, preencha o
+        máximo de campos abaixo — principalmente **modelo e firmware da
+        central**, já que boa parte do comportamento desta integração varia
+        conforme os dois.
+
+        ⚠️ **Antes de continuar**: confira a seção "Modelos suportados" e
+        "Limitações conhecidas" do
+        [README](../../blob/main/README.md) — alguns comportamentos (ex.:
+        nomes de zona e leitura de eventos não disponíveis em determinados
+        modelos/firmwares) são esperados, não bugs.
+
+  - type: dropdown
+    id: modelo
+    attributes:
+      label: Modelo da central
+      options:
+        - AMT 1016 NET
+        - AMT 2018 E/EG
+        - AMT 2018 E SMART
+        - AMN 24 NET
+        - AMT 4010 SMART
+        - Outro (descreva abaixo)
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware da central
+      description: Visível no atributo "Firmware" do dispositivo, ou na tela de status da central
+      placeholder: "ex.: 5.2"
+    validations:
+      required: true
+
+  - type: input
+    id: versao_integracao
+    attributes:
+      label: Versão da integração
+      description: Visível em Configurações → Dispositivos e Serviços → Intelbras Alarm
+      placeholder: "ex.: v1.8.3"
+    validations:
+      required: true
+
+  - type: input
+    id: versao_ha
+    attributes:
+      label: Versão do Home Assistant
+      placeholder: "ex.: 2026.8.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: descricao
+    attributes:
+      label: O que aconteceu
+      description: Descreva o problema com o máximo de detalhe possível
+    validations:
+      required: true
+
+  - type: textarea
+    id: esperado
+    attributes:
+      label: O que você esperava que acontecesse
+    validations:
+      required: false
+
+  - type: textarea
+    id: passos
+    attributes:
+      label: Passos para reproduzir
+      description: Se souber como reproduzir de novo, ajuda bastante
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Log relevante
+      description: >-
+        Ative o log em nível debug para `custom_components.intelbras_alarm`
+        (Configurações → Sistema → Logs → ⋮ ao lado da integração → Ativar
+        log de depuração), reproduza o problema, e cole aqui só o trecho
+        relevante — não precisa o log inteiro.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmacoes
+    attributes:
+      label: Antes de enviar
+      options:
+        - label: >-
+            Conferi a seção "Limitações conhecidas" do README e não é um
+            comportamento já documentado como esperado
+          required: true
+        - label: >-
+            Removi qualquer senha, token ou informação sensível do log/frames
+            colados acima (ex.: senha da central aparece em ASCII dentro dos
+            frames brutos — apague ou substitua por `XXXX` antes de colar)
+          required: true

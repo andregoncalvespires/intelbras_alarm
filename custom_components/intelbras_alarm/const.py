@@ -261,7 +261,7 @@ EEPROM_EXTENDED_MIN_FIRMWARE: dict[str, tuple[int, int] | None] = {
 # Diferente da tabela usada na leitura de eventos via EEPROM
 # (protocol.EVENT_CODE_TABLE, limitada aos 17 bytes brutos já observados
 # em captura real), o protocolo Receptor IP transmite o código de 4
-# dígitos por extenso, dígito a dígito — então os 65 códigos abaixo já
+# dígitos por extenso, dígito a dígito — então os 67 códigos abaixo já
 # são todos diretamente utilizáveis, sem depender de observar cada um
 # numa captura real primeiro.
 #
@@ -295,6 +295,7 @@ RECEPTOR_IP_EVENT_TABLE: dict[str, str] = {
     "1333": "Problema em teclado ou receptor",
     "1351": "Falha na linha telefônica",
     "1354": "Falha ao comunicar evento",
+    "1361": "Falha keep alive ethernet",
     "1371": "Corte da fiação dos sensores",
     "1372": "Curto-circuito na fiação dos sensores",
     "1383": "Tamper do sensor",
@@ -328,6 +329,7 @@ RECEPTOR_IP_EVENT_TABLE: dict[str, str] = {
     "3321": "Restauração corte ou curto-circuito na sirene",
     "3333": "Restauração problema em teclado ou receptor",
     "3351": "Restauração linha telefônica",
+    "3361": "Keep alive ethernet recuperado",
     "3371": "Restauração corte da fiação dos sensores",
     "3372": "Restauração curto-circuito na fiação dos sensores",
     "3383": "Restauração tamper do sensor",

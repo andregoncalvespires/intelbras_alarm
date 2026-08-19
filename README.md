@@ -38,7 +38,7 @@ sabotagem, sirene, etc.) como entidades próprias.
 | Modelo | Firmware | Observação |
 |---|---|---|
 | AMT 1016 NET | 3.1 | — |
-| AMT 2018 E/EG | 6.2 | — |
+| AMT 2018 E/EG | 4.7 | — |
 | AMT 4010 SMART | 5.2 | — |
 | AMT 4010 SMART | 6.2 | Comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. Nesses casos, a integração usa valor padrão (zero/desligado) para os campos que não vierem naquela leitura específica — o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo, então o efeito prático costuma ser uma oscilação rápida e passageira, não uma falha permanente. |
 
@@ -250,6 +250,15 @@ conectando nela mesma no Home Assistant.
 3. Se o Home Assistant roda em Docker ou HAOS, essa porta precisa estar
    **exposta/mapeada** para a central conseguir alcançar — confira a
    documentação da sua instalação.
+
+> 💡 **Rede com VLANs/segmentação**: a conexão acontece no sentido
+> **central → Home Assistant** (é a central que liga para nós, ao
+> contrário de toda a comunicação normal desta integração, que liga
+> para a central). Se a central e o Home Assistant estiverem em VLANs
+> diferentes, garanta que o firewall/roteador permita tráfego **nesse
+> sentido específico** (da rede da central para a porta do Home
+> Assistant) — uma regra que só libera o sentido contrário (Home
+> Assistant → central) não é suficiente para o Receptor IP funcionar.
 
 Duas entidades novas, presentes sempre (ficam **indisponíveis** enquanto
 o recurso estiver desligado na configuração):

@@ -1,0 +1,41 @@
+name: 💡 Sugerir uma funcionalidade
+description: Uma ideia, melhoria, ou funcionalidade que gostaria de ver
+title: "[Sugestão] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideias são bem-vindas! Só um lembrete: este é um projeto pessoal,
+        sem vínculo com a Intelbras — funcionalidades que exigem acesso a
+        protocolos não documentados oficialmente podem levar tempo (ou não
+        serem viáveis com segurança) para implementar.
+
+  - type: textarea
+    id: problema
+    attributes:
+      label: Qual problema ou necessidade motiva essa sugestão?
+    validations:
+      required: true
+
+  - type: textarea
+    id: solucao
+    attributes:
+      label: O que você imagina como solução?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: modelo
+    attributes:
+      label: Modelo(s) de central relacionados (se aplicável)
+      multiple: true
+      options:
+        - AMT 1016 NET
+        - AMT 2018 E/EG
+        - AMT 2018 E SMART
+        - AMN 24 NET
+        - AMT 4010 SMART
+        - Não é específico de modelo
+    validations:
+      required: false
