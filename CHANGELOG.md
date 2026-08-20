@@ -8,6 +8,22 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.1] — pré-lançamento, não visível por padrão no HACS
+
+### Corrigido
+- **Resposta de status com tamanho inesperado** (ex.: bug conhecido do
+  firmware 6.2 da AMT 4010 SMART) deixa de ser tratada como "sucesso com
+  campos zerados" e passa a ser tratada como falha de leitura, igual a
+  uma queda de conexão — cai no mesmo mecanismo de tolerância já
+  existente (`_handle_poll_failure`). Antes desta correção, uma resposta
+  truncada podia fazer uma entidade mostrar um valor **errado** por um
+  ciclo de polling (ex.: zona aberta aparecendo como fechada), com risco
+  real de disparar automações por engano. Agora: uma ocorrência isolada
+  não altera nenhum valor de entidade (mantém o último dado bom
+  conhecido); só escala para "indisponível" se o problema persistir além
+  da janela de tolerância (8s por padrão) — mesma proteção contra
+  travamento silencioso já usada para quedas de conexão reais.
+
 ## [2.0.1]
 
 ### Corrigido

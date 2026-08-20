@@ -325,6 +325,29 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             )
             if not response.valid_checksum:
                 raise UpdateFailed("Checksum inválido na resposta de status")
+
+            # Discutido e decidido explicitamente com o usuário: uma resposta
+            # de tamanho errado NÃO é mais aceita como status válido (mesmo
+            # que protocol.py consiga "ler" ela de forma defensiva, com
+            # zero/False nos campos ausentes) — isso já causou risco real de
+            # a integração aplicar um valor ERRADO numa entidade por um
+            # ciclo (ex.: uma zona aberta aparecendo como fechada), podendo
+            # disparar automações por engano. Em vez disso, tratamos como
+            # falha de leitura, igual a uma queda de conexão: cai no mesmo
+            # mecanismo de tolerância de _handle_poll_failure() (silencioso
+            # se isolado, dentro dos 8s de tolerância; escala pra
+            # indisponível de verdade só se persistir) — nenhuma entidade
+            # muda de valor por causa de uma leitura isolada incompleta.
+            expected_len = FAMILY_STATUS_LEN.get(self.family)
+            if expected_len is not None and len(response.content) != expected_len:
+                raise UpdateFailed(
+                    f"Resposta de status com tamanho inesperado para {self.family}: "
+                    f"recebidos {len(response.content)} bytes, esperados {expected_len} "
+                    f"— a central pode ter um firmware com comportamento incorreto "
+                    f"(ver README, seção de modelos testados). Conteúdo recebido: "
+                    f"{response.content.hex(' ').upper()}"
+                )
+
             status = parse_status(response.content, self.family)
         except (PanelConnectionError, UpdateFailed, IndexError, ValueError) as err:
             self._handle_poll_failure(err)
@@ -359,26 +382,6 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             )
             self._poll_failure_logged = False
         self._last_poll_success_monotonic = time.monotonic()
-
-        # Scenario A (discutido com o usuário): a central deveria sempre
-        # responder com o tamanho fixo esperado para a família detectada.
-        # Um firmware com bug (ex.: AMT 4010 SMART fw 6.2, documentado no
-        # README) pode ocasionalmente mandar uma resposta menor — isso não
-        # quebra a leitura (protocol.py já é defensivo, usa 0/False pros
-        # campos ausentes), mas é um sinal de saúde da central que vale
-        # registrar, mesmo sem impedir o funcionamento normal.
-        expected_len = FAMILY_STATUS_LEN.get(self.family)
-        if expected_len is not None and len(response.content) != expected_len:
-            _LOGGER.warning(
-                "Resposta de status com tamanho inesperado para %s: recebidos %d "
-                "bytes, esperados %d — a central pode ter um firmware com "
-                "comportamento incorreto (ver README, seção de modelos testados). "
-                "Conteúdo recebido: %s",
-                self.family,
-                len(response.content),
-                expected_len,
-                response.content.hex(" ").upper(),
-            )
 
         # Log de diagnóstico do status bruto recebido a cada polling — é o
         # que permite comparar, byte a byte, o comportamento real da
