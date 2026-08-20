@@ -569,6 +569,200 @@ indisponíveis) enquanto o Receptor IP estiver desligado na configuração.
 
 ---
 
+## AMT 8000 (experimental)
+
+> ⚠️ **Nada nesta seção foi validado contra hardware real.** Toda a
+> implementação vem de engenharia reversa (decompilação do app oficial
+> AMT Remoto v3.4.2.2) cruzada com um fluxo Node-RED de terceiros usado
+> como referência inicial. Disponível só no branch `dev`, ainda não
+> mesclado em `main`.
+
+A AMT 8000 usa um **protocolo de comunicação completamente diferente**
+do ISECNet/ISECMobile usado pelas demais centrais suportadas — não é uma
+variação de comando dentro do mesmo protocolo, é outro protocolo desde o
+primeiro byte, com sessão autenticada.
+
+### Arquitetura: módulo novo, não uma extensão do protocolo existente
+
+Reaproveita o padrão já usado para o Receptor IP (protocolo diferente →
+módulo próprio, não uma ramificação dentro do código existente):
+
+- `protocol_amt8000.py` — framing, checksum, construtores de frame,
+  parsers (camada pura, sem I/O).
+- `panel_client_amt8000.py` — conexão TCP persistente + sessão
+  autenticada, equivalente ao `panel_client.py` das demais centrais.
+- `coordinator.py` ganhou métodos específicos (`_async_update_data_amt8000`,
+  `_async_refresh_zone_names_amt8000`, `_async_read_events_amt8000`,
+  `async_request_event_photo`) que a família `FAMILY_8000` usa no lugar
+  dos equivalentes ISECMobile — sem alterar o comportamento das demais
+  famílias.
+- `camera.py` — entidade nova, só para esta família (ver "Fotos de
+  evento" abaixo).
+- `receptor_ip.py` — **sem alteração nenhuma**: a AMT 8000 reporta
+  eventos em tempo real pelo mesmo subconjunto de comandos já
+  implementado (`0xB0`, `0xB4`, `0xF7`) — ainda não confirmado com
+  captura real, mas não deveria exigir nenhuma mudança nesse módulo se
+  se confirmar.
+
+### Framing e checksum
+
+```
+[0x00 0x00] [srcId: 0x00 0x01] [0x00] [LEN] [opcode_hi opcode_lo] [conteúdo...] [checksum]
+```
+
+- `srcId` — par fixo `[0x00, 0x01]`, observado sempre assim (provável
+  marcador de versão de protocolo).
+- `LEN` — bytes entre o próprio campo e o checksum (opcode + conteúdo),
+  exclusive o checksum.
+- **Checksum**: XOR de todos os bytes anteriores, complementado
+  (`^ 0xFF`) — **mesmo algoritmo usado em todo o resto do protocolo**
+  desta integração (ISECMobile principal, Receptor IP). Confirmado byte
+  a byte contra `checkSum()` em `ProtocoloServidorAmt8000` no app
+  oficial.
+
+### Autenticação (opcode `0xF0F0`)
+
+Conexão **persistente**, com uma autenticação única por sessão — reaproveita
+o mesmo padrão de conexão do `panel_client.py` das demais famílias.
+
+Senha: 6 dígitos, um nibble por byte, **dígito `0` vira `0x0A`** — essa é
+a **mesma convenção do Receptor IP e do protocolo legado `0xE7`**
+(estilo Contact-ID), **não** a do ISECMobile principal (que usa senha em
+ASCII puro — ver seção "Nomes de zona e log de eventos" mais abaixo e o
+Changelog). Preenchida com `0x01` até completar 6 posições se a senha
+tiver menos dígitos.
+
+Checksum de referência validado nesta implementação: senha de teste
+`786531` produz frame terminado em `0xF9` — confirmado contra
+`Amt8000.autenticaConexaoRemota()` do app oficial.
+
+### Opcodes confirmados (extraídos do código-fonte do app oficial)
+
+| Ação | Opcode | Conteúdo |
+|---|---|---|
+| Autenticação | `0xF0F0` | senha (6 dígitos, `0`→`0x0A`) |
+| Status completo | `0x0B4A` | — |
+| Armar/desarmar/stay | `0x401E` | `[partição, modo]` |
+| Bypass de zona (**individual**) | `0x401F` | `[índice_zona, flag 0/1]` |
+| PGM on/off | `0x45AF` | `[pgm, on/off]` |
+| Pânico | `0x401A` | `[tipo]` |
+| Índice do buffer de eventos | `0x3003` | `[0x00]` |
+| Leitura de eventos | `0x3900` | lista de índices (par alto/baixo), até 16 por chamada |
+| Solicitar foto | `0x0BB0` | ver "Fotos de evento" abaixo |
+| Nome da central | `0x31E0` | — |
+| Nomes de zona | `0x33E0` | lista de índices |
+| Nomes de usuário | `0x32E0` | lista de índices |
+| Nomes de partição | `0x34E0` | lista de índices |
+| Nomes de PGM | `0x35E0` | lista de índices |
+| Nomes de teclado | `0x36E0` | lista de índices |
+| Nomes de sirene | `0x38E0` | lista de índices |
+| Desconectar | `0xF0F1` | — |
+
+⚠️ `COMANDO_READ_EEPROM` (`0x3F12`) existe como constante declarada no
+app oficial, mas **não é usado em nenhum lugar** dele — tratado como não
+confiável, fora do escopo desta integração.
+
+**Diferença importante em relação ao ISECMobile**: o bypass de zona
+(`0x401F`) é **individual, uma zona por comando** — diferente do `0x42`
+do ISECMobile principal, que é um comando **absoluto** sobre as 64
+zonas de uma vez. `coordinator.async_bypass_zones()` já trata isso:
+para `FAMILY_8000`, envia um frame por zona, em loop; para as demais
+famílias, continua enviando o comando absoluto único.
+
+### Status completo (`0x0B4A`)
+
+Blob de **~152 bytes** (`const.AMT8000_STATUS_MAX_LEN`) — valor
+**estimado** a partir do fluxo de referência de terceiros, nunca
+confirmado byte a byte contra uma captura real. Por isso, diferente das
+demais famílias (`FAMILY_STATUS_LEN`, comparação exata, validada em
+campo há muito tempo), a checagem de tamanho truncado para a AMT 8000
+usa uma margem cautelosa — só trata como falha se vier abaixo de 50% do
+esperado, para não arriscar rejeitar respostas válidas só por causa de
+uma estimativa imprecisa (ver "Diagnóstico de resposta com tamanho
+inesperado" mais abaixo, agora compartilhado entre todas as famílias).
+
+Offsets mapeados (todos por engenharia reversa, não confirmados em
+campo): zonas (1-64, bitfields de aberta/violada/anulada/bateria-baixa/
+tamper/falha-comunicação), partições (1-16, 1 bit cada), data/hora em
+BCD, bateria (enum de 4 níveis: 0/33/66/100%), PGMs, sirene, AC/bateria.
+
+### Leitura de eventos (`0x3900`)
+
+Buffer circular de até **512 posições** (`AMT8000_EVENT_BUFFER_SIZE`),
+lido em blocos de até **16 registros por chamada**
+(`AMT8000_EVENT_READ_BATCH`). Layout do registro (extraído de
+`Translate8000Events` no app oficial):
+
+| Índice | Campo |
+|---|---|
+| 2–7 | Ano, mês, dia, hora, minuto, segundo |
+| 8–9 | Código de evento (qualificador + Contact-ID) |
+| 10–11 | Evento programado |
+| 11–12 | Zona/usuário |
+| 13 | Partição |
+| 14 | Flag de foto associada |
+
+### Nomes (zona/usuário/partição/PGM/teclado/sirene)
+
+Lidos **1 índice por requisição** — decisão deliberada desta primeira
+versão (prioriza isolamento de erro e simplicidade do parser sobre
+desempenho), diferente do app oficial, que lê em lotes de 10. Só roda na
+configuração inicial ou numa sincronização manual, nunca durante o
+polling normal. Reaproveita o mesmo botão "Sincronizar nomes de zona" já
+existente — `supports_extended_eeprom` retorna `True` incondicionalmente
+para `FAMILY_8000` (sem limiar de firmware, diferente das demais
+famílias — ver seção própria mais abaixo).
+
+### Fotos de evento (`camera.py`) — incompleto, lacuna conhecida
+
+A entidade `camera` existe e funciona com segurança (mostra "sem imagem
+disponível" quando não há foto), mas **ainda não consegue baixar uma
+foto de verdade**. O formato do registro de evento decodificado hoje só
+extrai um flag booleano "tem foto" — falta identificar com confiança o
+**índice exato** que a central espera de volta para solicitar aquela
+foto específica (comando `0x0BB0`). O fluxo completo de download
+(autenticação de sessão de fotos + fragmentação) já está documentado no
+LEIA-ME de referência (Base de Conhecimento do Projeto), mas nunca foi
+exercitado nesta implementação. Fotos, quando o fluxo funcionar, ficam
+salvas em `/media/amt8000/<entry_id>/` (diretório de mídia do Home
+Assistant), não só em memória — para continuar acessíveis mesmo depois
+de um evento novo chegar.
+
+### Configuração: seleção manual, não detecção automática
+
+Diferente das demais 5 famílias (sondadas automaticamente por tentativa
+e erro dentro do mesmo protocolo ISECMobile), a AMT 8000 exige marcar
+manualmente a opção **"AMT 8000 (protocolo experimental)"** na tela de
+configuração inicial (`config_flow.py`, `CONF_AMT8000_MODE`).
+
+**Por quê**: a AMT 8000 usa um protocolo de transporte totalmente
+diferente — não haveria uma forma segura de "tentar" esse protocolo
+silenciosamente durante a sondagem automática das outras famílias sem
+risco de confundir esse fluxo já validado em produção. Essa cautela não
+é teórica: uma tentativa real de sondar um protocolo "errado" contra uma
+central (o protocolo legado `0xE7`, numa AMT 1016 NET) já causou um
+**travamento real de central** durante os testes deste projeto (ver
+"Limitações conhecidas" mais abaixo) — o mesmo tipo de risco que se
+tentaria evitar aqui.
+
+### O que ainda depende de validação em campo
+
+- Comportamento exato de timeout/reconexão da sessão autenticada sob
+  polling sustentado.
+- Confirmação byte a byte do blob de status (offsets mapeados via
+  engenharia reversa, nunca vistos contra uma captura real).
+- Resposta real ao comando de leitura de nome individual (formato de
+  retorno — quantos bytes, se inclui padding).
+- Fluxo completo de download de foto (autenticação de sessão de fotos +
+  fragmentação) — ver "Fotos de evento" acima.
+- Se o Receptor IP realmente funciona sem alteração para esta família
+  (assumido, nunca testado).
+
+Nenhum desses pontos impede o uso experimental — são validações naturais
+da fase de testes com hardware real.
+
+---
+
 ## Fidelidade ao documento oficial (nomenclatura, `device_class`, estados)
 
 Comparação entre o que a documentação ISECNet Rev. 15 descreve e o que a
@@ -839,6 +1033,10 @@ recebidos em hex, não só a contagem.
    seção 7.4 como o comportamento da AMT 4010 para esse comando), envia
    `0x5B` (status completo) e identifica o modelo pelo Status25.
 3. Caso contrário, identifica o modelo pelo Status19 da resposta ao `0x5A`.
+
+Não inclui a AMT 8000 nessa sondagem — protocolo de transporte
+incompatível, exige seleção manual (`CONF_AMT8000_MODE`). Ver seção
+"AMT 8000 (experimental)" para o motivo.
 
 ### Nomes de zona e log de eventos (EEPROM, comando `0x5C`)
 
@@ -1142,6 +1340,9 @@ não estão batendo com o comportamento real da central.
 
 ## Limitações conhecidas
 
+- **AMT 8000 é experimental, sem nenhuma validação em hardware real** —
+  ver seção própria "AMT 8000 (experimental)" para o que ainda depende
+  de teste de campo. Disponível só no branch `dev`.
 - O protocolo não informa **qual partição** disparou quando há mais de uma
   partição armada — o alarme mostra `triggered` em todas as partições
   armadas simultaneamente (ver seção sobre `triggered` acima).
