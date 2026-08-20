@@ -49,7 +49,7 @@ de alarme por fora.
 | AMT 1016 NET | 3.1 | — |
 | AMT 2018 E/EG | 4.7 | — |
 | AMT 4010 SMART | 5.2 | — |
-| AMT 4010 SMART | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. A leitura de campos (`protocol.py`) já é defensiva por padrão (`content[X] if len(content) > X else 0`), então uma resposta curta não derruba a integração — os campos ausentes naquela leitura específica ficam com valor padrão (zero/desligado) só naquele ciclo, e o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo. Efeito prático: possível oscilação rápida e passageira em alguma entidade, não uma falha permanente. |
+| AMT 4010 SMART | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. Uma resposta assim **não é mais aceita como status válido** — é tratada como falha de leitura isolada (mesmo mecanismo de tolerância usado para quedas de conexão, ver seção "Tolerância a falhas passageiras"), então nenhuma entidade chega a mostrar um valor incorreto por causa disso; o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo. |
 
 Os demais modelos suportados pelo protocolo (AMT 2018 E SMART, AMN 24
 NET) seguem a mesma estrutura, mas ainda não foram validados em hardware
