@@ -1,5 +1,9 @@
 # Intelbras Alarm (ISECNet) — Home Assistant
 
+<p align="center">
+  <img src="docs/images/banner.png" alt="Intelbras Alarm Integration — central Intelbras AMT 4010 SMART conectada ao Home Assistant Core" width="400">
+</p>
+
 > ## ⚠️ Responsabilidade sobre o uso da integração e garantia
 >
 > **Este projeto NÃO tem participação alguma da Intelbras.**
