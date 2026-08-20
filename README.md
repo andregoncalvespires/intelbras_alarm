@@ -44,7 +44,7 @@ sabotagem, sirene, etc.) como entidades próprias.
 | AMT 1016 NET | 3.1 | — |
 | AMT 2018 E/EG | 4.7 | — |
 | AMT 4010 SMART | 5.2 | — |
-| AMT 4010 SMART | 6.2 | Comportamento incorreto da central: eventualmente a central envia uma resposta de status menor que o esperado aleatoriamente. Nesses casos, a integração usa valor padrão (zero/desligado) para os campos que não vierem naquela leitura específica — o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo, então o efeito prático costuma ser uma oscilação rápida e passageira, não uma falha permanente. |
+| AMT 4010 SMART | 6.2 | Comportamento incorreto da central: eventualmente a central envia uma resposta de status menor que o esperado aleatoriamente. Nesses casos, a integração descarta a leitura (tratada como falha isolada, igual a uma queda de conexão) e mantém o último dado bom conhecido — nenhuma entidade muda de valor por causa disso. Só fica indisponível se o problema persistir por mais de 8s seguidos (ver seção de diagnóstico no README_DETALHADO.md). |
 
 Os demais modelos suportados pelo protocolo (AMT 2018 E SMART, AMN 24
 NET) seguem a mesma estrutura, mas ainda não foram validados em hardware
