@@ -137,7 +137,10 @@ def cmd_auth(password: str) -> bytes:
     """Monta o comando de autenticação (``0xF0F0``).
 
     Conteúdo = ``[0x03]`` (sub-comando) + 6 dígitos da senha (nibbles hex;
-    dígito ``0`` vira ``0x0A`` — mesma convenção do protocolo ISECMobile,
+    dígito ``0`` vira ``0x0A`` — mesma convenção já usada no Receptor IP
+    e no protocolo legado ``0xE7`` (Contact-ID), **não** a do ISECMobile
+    principal (``protocol.py``), que embute a senha em ASCII puro — são
+    protocolos diferentes, cada um com sua própria codificação;
     preenchido com ``0x01`` até completar 6 posições) + ``[0x01, 0x00]``
     (marcador final) — layout confirmado byte a byte contra
     ``Amt8000.autenticaConexaoRemota`` do app oficial (checksum de
