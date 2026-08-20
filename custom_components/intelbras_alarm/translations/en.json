@@ -12,14 +12,16 @@
           "code_required_disarm": "Ask for the password to DISARM via Home Assistant",
           "enabled_zones": "Zones enabled by default",
           "receptor_ip_enabled": "Enable event receiving (Receptor IP)",
-          "receptor_ip_port": "Receptor IP listening port"
+          "receptor_ip_port": "Receptor IP listening port",
+          "amt8000_mode": "AMT 8000 (experimental protocol)"
         },
         "data_description": {
           "code_required_arm": "Unchecked (default): arms with a single tap, no typing. Checked: asks for the password before arming.",
           "code_required_disarm": "Unchecked (default): disarms with a single tap, no typing. Checked: asks for the password before disarming — recommended if you want an extra lock on this action, the more sensitive of the two.",
           "enabled_zones": "Format: ranges and/or numbers separated by ; (e.g. 1-5;8;10-15). Zones outside this list still exist, just disabled until you enable them manually under Settings → Entities.",
           "receptor_ip_enabled": "Unchecked (default): off, no port is opened. Checked: the panel can connect here and push events in real time — you'll need to configure the panel separately (outside this screen) to point at Home Assistant's IP and the port below. See the README for the full walkthrough.",
-          "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect (not to be confused with the panel's own port, above) — must match what's configured on the panel. Only matters if the option above is checked."
+          "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect (not to be confused with the panel's own port, above) — must match what's configured on the panel. Only matters if the option above is checked.",
+          "amt8000_mode": "Only check this if your panel is an AMT 8000 — it uses a separate protocol still under development and testing (see README_DETALHADO.md, \"AMT 8000 (experimental)\" section). Leave unchecked for the other models (2018/1016/4010), which keep automatic detection."
         }
       },
       "partition_passwords": {

@@ -362,6 +362,13 @@ class PanelStatus:
     zones_short_circuit: dict[int, bool]  # mesmo alcance de zonas_tamper
     pgm_expander_problem: dict[int, bool]  # {1..4: bool} — só 4010, vazio na 2018/1016
     zone_expander_problem: dict[int, bool]  # {1..6: bool} — só 4010, vazio na 2018/1016
+    # Campo adicionado para a AMT 8000 (ver protocol_amt8000.py): falha de
+    # comunicação por zona sem fio (RF). Fica sempre vazio {} nas famílias
+    # 2018/4010, que não têm esse dado — dataclass reaproveitada tal como
+    # está entre as três famílias (ver decisão de arquitetura registrada
+    # no histórico do projeto: reaproveitar PanelStatus evita duplicar
+    # praticamente todas as entidades sensor/binary_sensor).
+    zones_comm_failure: dict[int, bool] = field(default_factory=dict)
 
 
 def parse_status_2018(content: bytes) -> PanelStatus:

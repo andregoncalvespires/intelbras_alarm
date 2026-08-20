@@ -5,6 +5,66 @@ DOMAIN = "intelbras_alarm"
 MANUFACTURER = "Intelbras"
 
 # ---------------------------------------------------------------------------
+# AMT 8000 — protocolo próprio (autenticado), completamente diferente do
+# ISECMobile/ISECNet usado pelos demais modelos (ver protocol_amt8000.py).
+#
+# EXPERIMENTAL / EM DESENVOLVIMENTO: toda esta seção foi obtida por
+# engenharia reversa do app oficial AMT Remoto (androguard, v3.4.2.2),
+# validada com uma implementação de terceiros conhecida (fluxo Node-RED
+# testado em campo pelo usuário em firmware 2.1.5), mas AINDA NÃO
+# confirmada por captura de tráfego própria contra uma central AMT 8000
+# real. Ver README_DETALHADO.md, seção "AMT 8000 (experimental)", para o
+# que já foi validado e o que ainda depende de teste em campo.
+# ---------------------------------------------------------------------------
+FAMILY_8000 = "8000"
+MODEL_AMT_8000 = "amt_8000"
+AMT_8000_MODEL_NAME = "AMT 8000"
+
+# Par fixo observado em toda transação (autenticação e comandos) — provável
+# identificador de versão do protocolo. Nunca visto com outro valor.
+AMT8000_SRC_ID = (0x00, 0x01)
+
+# Opcodes (2 bytes cada), extraídos de ProtocoloServidorAmt8000 e
+# Amt8000.class do app oficial — ver README_DETALHADO.md para o
+# significado de cada um e a fonte exata.
+AMT8000_CMD_AUTH = (0xF0, 0xF0)
+AMT8000_CMD_STATUS = (0x0B, 0x4A)
+AMT8000_CMD_ARM_DISARM = (0x40, 0x1E)
+AMT8000_CMD_BYPASS = (0x40, 0x1F)
+AMT8000_CMD_PANIC = (0x40, 0x1A)
+AMT8000_CMD_PGM = (0x45, 0xAF)
+AMT8000_CMD_EVENT_BUFFER_INDEX = (0x30, 0x03)
+AMT8000_CMD_READ_EVENTS = (0x39, 0x00)
+AMT8000_CMD_PHOTO_REQUEST = (0x0B, 0xB0)
+AMT8000_CMD_DISCONNECT = (0xF0, 0xF1)
+AMT8000_CMD_SYNC_NOME_CENTRAL = (0x31, 0xE0)
+AMT8000_CMD_SYNC_USUARIO = (0x32, 0xE0)
+AMT8000_CMD_SYNC_ZONA = (0x33, 0xE0)
+AMT8000_CMD_SYNC_PARTICAO = (0x34, 0xE0)
+AMT8000_CMD_SYNC_PGM = (0x35, 0xE0)
+AMT8000_CMD_SYNC_TECLADO = (0x36, 0xE0)
+AMT8000_CMD_SYNC_SIRENE = (0x38, 0xE0)
+AMT8000_CMD_WRITE_MESSAGE = (0x21, 0xF1)  # escrita individual de nome (não usado ainda)
+
+# Valores do "modo" no conteúdo de AMT8000_CMD_ARM_DISARM — deduzidos da
+# convenção do fluxo de referência (0=desarmar, 1=armar, 2=stay), AINDA
+# NÃO confirmados byte a byte contra uma captura real desta central.
+AMT8000_MODE_DISARM = 0x00
+AMT8000_MODE_ARM = 0x01
+AMT8000_MODE_STAY = 0x02
+
+AMT8000_ZONE_COUNT = 64
+AMT8000_PARTITION_COUNT = 16
+AMT8000_PGM_COUNT = 16
+AMT8000_EVENT_BUFFER_SIZE = 512  # posições do buffer circular (mapa de EEPROM)
+AMT8000_EVENT_READ_BATCH = 16  # nº de eventos lidos por chamada de AMT8000_CMD_READ_EVENTS
+AMT8000_STATUS_MAX_LEN = 152  # bytes do blob de status completo
+
+# Diretório dentro de /media onde as fotos de eventos são salvas (entidade
+# camera) — ver decisão de arquitetura registrada no histórico do projeto.
+AMT8000_MEDIA_SUBDIR = "amt8000"
+
+# ---------------------------------------------------------------------------
 # Configuração / opções
 # ---------------------------------------------------------------------------
 CONF_PASSWORD = "password"
@@ -197,19 +257,23 @@ def parse_zone_spec(spec: str, max_zone: int = 64) -> set[int]:
 # variante "SMART" da 2018 respondem corretamente a esse comando; nas
 # demais (2018 E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo
 # mas a central não implementa esse modo de fato.
-MODELS_SUPPORTING_STAY = {MODEL_4010_SMART, MODEL_2018_SMART}
+MODELS_SUPPORTING_STAY = {MODEL_4010_SMART, MODEL_2018_SMART, MODEL_AMT_8000}
 
 # Nº máximo de zonas cobertas pelos bytes de status de cada família (limite
 # do protocolo — ver MODEL_ZONE_COUNT para o nº de entidades por modelo,
 # que hoje coincide com este valor para todos os modelos suportados)
-FAMILY_MAX_ZONES = {FAMILY_2018: 48, FAMILY_4010: 64}
+FAMILY_MAX_ZONES = {FAMILY_2018: 48, FAMILY_4010: 64, FAMILY_8000: AMT8000_ZONE_COUNT}
 FAMILY_STATUS_CMD = {FAMILY_2018: CMD_STATUS_PARTIAL, FAMILY_4010: CMD_STATUS_FULL}
 FAMILY_STATUS_LEN = {FAMILY_2018: 43, FAMILY_4010: 54}
+MODEL_ZONE_COUNT[MODEL_AMT_8000] = AMT8000_ZONE_COUNT
 
 # Nº de PGMs suportadas com leitura de status real (ver protocol.py):
 # família 2018/1016 só reporta PGM1/PGM2 no status; a família 4010 reporta
 # PGM1-PGM3 no status principal e PGM4-PGM19 via expansores (Status53/54).
-FAMILY_PGM_COUNT = {FAMILY_2018: 2, FAMILY_4010: 19}
+# A AMT 8000 reporta só PGM1-PGM3 no blob de status (ver protocol_amt8000.py)
+# mas o comando de controle aceita endereçar até 16 — os switches de PGM
+# 4-16 ficam desabilitados por padrão, igual ao padrão já usado para a 4010.
+FAMILY_PGM_COUNT = {FAMILY_2018: 2, FAMILY_4010: 19, FAMILY_8000: AMT8000_PGM_COUNT}
 
 # Endereços do comando 0x50 para PGM 1..19 (31..43 em hexadecimal, doc 7.3)
 PGM_ADDRESSES = {i: 0x30 + i for i in range(1, 20)}  # PGM1=0x31 ... PGM19=0x43

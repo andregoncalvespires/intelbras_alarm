@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_CODE_REQUIRED_DISARM,
     DOMAIN,
     FAMILY_4010,
+    FAMILY_8000,
     MANUFACTURER,
     ZONE_SPEC_FORMAT_HELP,
     InvalidZoneSpec,
@@ -75,12 +76,24 @@ async def async_setup_entry(
         status = coordinator.data
         if status is None or not status.partition_mode_enabled:
             return
-        wanted = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
-        new_entities = [
-            IntelbrasPartitionAlarmPanel(coordinator, entry, p)
-            for p in wanted
-            if p not in partitions_added
-        ]
+        if coordinator.family == FAMILY_8000:
+            # partitions_armed vem chaveado "0".."16" (ver
+            # protocol_amt8000.parse_status) — "0" é a central/geral,
+            # tratada pela entidade IntelbrasCentralAlarmPanel acima;
+            # aqui só criamos as 16 partições numeradas.
+            wanted = [str(n) for n in range(1, 17)]
+            new_entities = [
+                IntelbrasAmt8000PartitionAlarmPanel(coordinator, entry, p)
+                for p in wanted
+                if p not in partitions_added
+            ]
+        else:
+            wanted = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
+            new_entities = [
+                IntelbrasPartitionAlarmPanel(coordinator, entry, p)
+                for p in wanted
+                if p not in partitions_added
+            ]
         if new_entities:
             partitions_added.update(p for p in wanted)
             async_add_entities(new_entities)
@@ -437,6 +450,54 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
             raise HomeAssistantError(
                 "Este modelo não suporta ativação em modo Stay (armed_home) — "
                 "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+            )
+        password = self._resolve_password(code, self._require_code_arm, self._partition)
+        await self.coordinator.async_arm(self._partition, stay=True, password=password)
+
+
+class IntelbrasAmt8000PartitionAlarmPanel(_BaseAlarmPanel):
+    """Partição numerada (1-16) da AMT 8000 (protocolo próprio).
+
+    EXPERIMENTAL — ver protocol_amt8000.py e README_DETALHADO.md. Não
+    reaproveita ``IntelbrasPartitionAlarmPanel`` (que usa partições A-D
+    e senhas específicas por partição, próprias do ISECMobile) porque a
+    numeração e a ausência de senha por partição são diferentes o
+    suficiente para justificar uma classe própria — mas reaproveita toda
+    a lógica comum de ``_BaseAlarmPanel`` (cálculo de estado, resolução
+    de senha, serviços de bypass/eventos/comando bruto).
+    """
+
+    def __init__(
+        self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, partition: str
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._partition = partition
+        self._attr_unique_id = f"{entry.entry_id}_partition_{partition}"
+        self._attr_name = f"Partição {partition}"
+        self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+        if coordinator.supports_stay:
+            self._attr_supported_features |= AlarmControlPanelEntityFeature.ARM_HOME
+
+    @property
+    def alarm_state(self) -> AlarmControlPanelState | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        armed = status.partitions_armed.get(self._partition, False)
+        return self._compute_state(armed, self._partition, status.zone_triggered)
+
+    async def async_alarm_disarm(self, code: str | None = None) -> None:
+        password = self._resolve_password(code, self._require_code_disarm, self._partition)
+        await self.coordinator.async_disarm(self._partition, password=password)
+
+    async def async_alarm_arm_away(self, code: str | None = None) -> None:
+        password = self._resolve_password(code, self._require_code_arm, self._partition)
+        await self.coordinator.async_arm(self._partition, stay=False, password=password)
+
+    async def async_alarm_arm_home(self, code: str | None = None) -> None:
+        if not self.coordinator.supports_stay:
+            raise HomeAssistantError(
+                "Este modelo não suporta ativação em modo Stay (armed_home)."
             )
         password = self._resolve_password(code, self._require_code_arm, self._partition)
         await self.coordinator.async_arm(self._partition, stay=True, password=password)

@@ -19,9 +19,11 @@ from .const import (
     DEFAULT_RECEPTOR_IP_PORT,
     DEFAULT_REQUEST_TIMEOUT,
     DOMAIN,
+    FAMILY_8000,
 )
 from .coordinator import IntelbrasAlarmCoordinator
 from .panel_client import PanelClient
+from .panel_client_amt8000 import PanelClientAmt8000
 from .receptor_ip import ReceptorIPServer
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,12 +34,13 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.SENSOR,
     Platform.BUTTON,
+    Platform.CAMERA,
 ]
 
 
 @dataclass
 class IntelbrasAlarmData:
-    client: PanelClient
+    client: PanelClient | PanelClientAmt8000
     coordinator: IntelbrasAlarmCoordinator
     receptor_server: ReceptorIPServer | None = None
 
@@ -49,12 +52,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # e não abrir nenhum socket com a central neste (re)carregamento.
     connection_enabled = await async_load_connection_enabled(hass, entry.entry_id)
 
-    client = PanelClient(
-        entry.data["host"],
-        entry.data["port"],
-        timeout=DEFAULT_REQUEST_TIMEOUT,
-        enabled=connection_enabled,
-    )
+    family = entry.data["family"]
+    client: PanelClient | PanelClientAmt8000
+    if family == FAMILY_8000:
+        # EXPERIMENTAL — ver protocol_amt8000.py e panel_client_amt8000.py.
+        client = PanelClientAmt8000(
+            entry.data["host"],
+            entry.data["port"],
+            entry.data[CONF_PASSWORD],
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            enabled=connection_enabled,
+        )
+    else:
+        client = PanelClient(
+            entry.data["host"],
+            entry.data["port"],
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            enabled=connection_enabled,
+        )
 
     coordinator = IntelbrasAlarmCoordinator(
         hass,
