@@ -636,6 +636,40 @@ Checksum de referência validado nesta implementação: senha de teste
 `786531` produz frame terminado em `0xF9` — confirmado contra
 `Amt8000.autenticaConexaoRemota()` do app oficial.
 
+### "Pedir senha para ativar/desativar" — comportamento diferente das demais famílias
+
+O comando de arme/desarme (`0x401E`, ver tabela de opcodes abaixo) **não
+carrega nenhum campo de senha** — a autenticação acontece uma única vez,
+na conexão (seção anterior), não a cada comando. Isso muda o que a opção
+"Pedir a senha para ATIVAR/DESATIVAR pelo Home Assistant" (`config_flow.py`,
+`CONF_CODE_REQUIRED_ARM`/`CONF_CODE_REQUIRED_DISARM`) precisa fazer:
+
+- **Nas demais famílias** (ISECMobile): o valor digitado na UI vira,
+  literalmente, a senha embutida no comando enviado à central — é a
+  **central** quem valida (NACK "Senha incorreta" se estiver errada).
+- **Na AMT 8000**: como o comando de fio não tem onde colocar essa senha,
+  o valor digitado é comparado **localmente**, pela própria integração,
+  contra a senha já configurada (`coordinator.password_for_partition()`)
+  — **antes** de qualquer comando ser enviado. Se não bater, a ação é
+  bloqueada com erro "Senha incorreta" sem nada ser mandado à central.
+
+**Por que essa mudança foi necessária** (achado real, não teórico):
+antes desta correção, `_resolve_password()` só conferia o **formato** do
+que foi digitado (4 a 6 dígitos numéricos) — nunca o conteúdo — e o
+valor digitado nunca chegava de fato ao comando `0x401E` (que não tem
+onde colocá-lo). Na prática, **qualquer sequência de 4 a 6 dígitos
+"funcionava"** para armar/desarmar uma AMT 8000 com essa opção marcada
+— uma falha de segurança real, não só uma inconsistência de UX. Corrigido
+comparando localmente antes de agir, em vez de simplesmente desabilitar a
+opção — preserva a utilidade original da funcionalidade (impedir que
+alguém sem saber a senha arme/desarme por um painel/dashboard
+compartilhado do Home Assistant).
+
+> ℹ️ Isso não se aplica a PGM, bypass, pânico ou nenhum outro comando —
+> só arme/desarme têm essa opção de "pedir senha" na UI do Home
+> Assistant (é um recurso padrão do `alarm_control_panel`, não algo
+> desta integração criou para outros domínios de entidade).
+
 ### Opcodes confirmados (extraídos do código-fonte do app oficial)
 
 | Ação | Opcode | Conteúdo |

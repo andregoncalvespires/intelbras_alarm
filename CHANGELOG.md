@@ -8,6 +8,22 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.3] — EXPERIMENTAL, branch `dev`
+
+### Corrigido
+- **Falha de segurança real**: "Pedir a senha para ATIVAR/DESATIVAR pelo
+  Home Assistant", na AMT 8000, checava só o **formato** do que era
+  digitado (4 a 6 dígitos) — nunca o conteúdo — porque o comando de fio
+  dessa central (`0x401E`) não carrega senha nenhuma (autenticação é só
+  na conexão, uma vez). Na prática, **qualquer sequência de dígitos
+  "funcionava"** para armar/desarmar com essa opção marcada. Corrigido:
+  para esta família, o valor digitado agora é comparado **localmente**
+  pela integração contra a senha configurada, antes de qualquer comando
+  ser enviado — bloqueia com "Senha incorreta" se não bater. Sem efeito
+  nas demais famílias (continuam com a central validando via NACK, como
+  sempre). Ver README_DETALHADO.md, seção AMT 8000, "Pedir senha para
+  ativar/desativar".
+
 ## [2.1.0-dev.1] — EXPERIMENTAL, branch `dev`
 
 ⚠️ Esta versão **não é destinada à `main`/HACS** — publicada apenas na

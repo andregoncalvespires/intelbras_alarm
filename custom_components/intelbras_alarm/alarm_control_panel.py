@@ -210,18 +210,30 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
     def _resolve_password(
         self, code: str | None, required: bool, partition: str | None = None
     ) -> str:
-        """Decide qual senha vai no comando ISECMobile enviado à central.
+        """Decide qual senha vai no comando enviado à central.
 
         Se a ação exigir código (configurado na inclusão da integração), o
-        valor digitado na UI do Home Assistant é usado **diretamente como a
-        senha do comando** — não é comparado contra a senha memorizada na
-        configuração. Isso permite usar uma senha diferente cadastrada na
-        própria central (ex.: uma senha de usuário secundária, ou a senha
-        específica de uma partição). A central valida a senha; se estiver
-        errada, o comando volta com NACK "Senha incorreta"
-        (``protocol.NackError``), convertido pelo coordinator em um erro
-        exibido na interface do Home Assistant — só é feita uma checagem
-        local de formato (4 a 6 dígitos numéricos), nunca de conteúdo.
+        comportamento muda conforme o protocolo:
+
+        - **ISECMobile** (demais modelos): o valor digitado na UI do Home
+          Assistant é usado **diretamente como a senha do comando** — não
+          é comparado localmente contra nada. Isso permite usar uma senha
+          diferente cadastrada na própria central (ex.: uma senha de
+          usuário secundária, ou a senha específica de uma partição). A
+          central valida a senha; se estiver errada, o comando volta com
+          NACK "Senha incorreta" (``protocol.NackError``).
+        - **AMT 8000**: o comando de arme/desarme (``0x401E``) **não
+          carrega senha nenhuma** — a autenticação acontece uma única vez,
+          na conexão (ver ``protocol_amt8000.cmd_auth``), não por comando.
+          Sem essa diferença tratada aqui, "pedir senha" viraria uma
+          checagem só de formato (4 a 6 dígitos), sem validar o
+          conteúdo — qualquer sequência de dígitos "funcionaria", já que
+          nada digitado chegaria de fato até a central (achado e discutido
+          com o usuário). Por isso, para esta família, o valor digitado é
+          comparado **localmente**, contra a senha já configurada da
+          integração, **antes** de qualquer comando ser enviado — não é a
+          central validando (ela nunca recebe esse valor), é a própria
+          integração.
 
         Quando não exigido, usa a senha configurada para ``partition`` (se
         houver uma específica cadastrada — só possível na 4010, ver
@@ -232,7 +244,11 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
             return self.coordinator.password_for_partition(partition)
         if not code or not (4 <= len(code) <= 6) or not code.isdigit():
             raise HomeAssistantError("Informe uma senha válida (4 a 6 dígitos numéricos)")
+        if self.coordinator.family == FAMILY_8000:
+            if code != self.coordinator.password_for_partition(partition):
+                raise HomeAssistantError("Senha incorreta")
         return code
+
 
     def _compute_state(
         self, activated: bool, mode_key: str, zone_triggered: bool

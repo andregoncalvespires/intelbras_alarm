@@ -93,7 +93,10 @@ adicione a URL deste repositório (categoria Integração) → instale
    motivo). Deixe desmarcado para qualquer outro modelo.
 4. Opcional: marque se quer que o Home Assistant **peça a senha** antes de
    ativar e/ou desativar pela interface (por padrão, nenhuma das duas —
-   usa a senha configurada automaticamente, sem perguntar nada).
+   usa a senha configurada automaticamente, sem perguntar nada). **Na AMT
+   8000**, essa senha é conferida **localmente pela integração** contra a
+   senha configurada (o comando de arme/desarme dessa central não carrega
+   senha própria) — nas demais centrais, quem confere é a própria central.
 5. Opcional: **zonas habilitadas por padrão** — formato `1-5;8;10-15`
    (intervalos e/ou números separados por `;`). Padrão: `1-8;17-24`. As
    demais zonas continuam existindo, só ficam desabilitadas até você
