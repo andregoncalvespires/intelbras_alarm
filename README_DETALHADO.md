@@ -768,7 +768,7 @@ papéis fazem mais sentido com números diferentes:
   feedback mais rápido pro usuário quando um comando falha, e reconexão
   mais ágil numa queda real (antes, cada tentativa de reconectar podia
   levar até 8s só pra desistir).
-- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` (8s por padrão)**: quanto tempo
+- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` (10s por padrão)**: quanto tempo
   de **silêncio acumulado** (sem nenhuma consulta de status bem-sucedida)
   a integração tolera antes de marcar as entidades como indisponíveis de
   verdade. Esse número mais generoso evita que um soluço isolado da
@@ -793,8 +793,8 @@ funciona assim:
 |---|---|---|
 | Switch "Conexão com a central" desligado | Nenhuma tentativa de comunicação é feita; entidades ficam indisponíveis | `INFO`, só na transição para esse estado (nunca se repete enquanto durar) |
 | Nunca houve nenhuma consulta bem-sucedida ainda | Falha imediata, entidades ficam indisponíveis | `ERROR`, só na primeira vez (não se repete a cada ciclo) |
-| Falha isolada, dentro da janela de tolerância (< 8s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
-| Silêncio acumulado ultrapassa a janela de tolerância (≥ 8s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR`, só na transição (não se repete a cada ciclo enquanto continuar falhando) |
+| Falha isolada, dentro da janela de tolerância (< 10s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
+| Silêncio acumulado ultrapassa a janela de tolerância (≥ 10s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR`, só na transição (não se repete a cada ciclo enquanto continuar falhando) |
 | Comunicação volta a funcionar depois de uma falha definitiva | Entidades voltam a ficar disponíveis | `WARNING`, avisando quanto tempo ficou indisponível |
 
 **Todas as linhas de `ERROR`/`INFO` de falha acima só aparecem uma vez por

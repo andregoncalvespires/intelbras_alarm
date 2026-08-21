@@ -50,7 +50,7 @@ DEFAULT_REQUEST_TIMEOUT = 3  # segundos
 # soluço passageiro da central (ex.: o bug do firmware 6.2 documentado no
 # README). Só depois que o silêncio ultrapassa este limite é que a falha
 # vira uma indisponibilidade de verdade.
-DEFAULT_CONNECTION_HEALTH_TIMEOUT = 8  # segundos
+DEFAULT_CONNECTION_HEALTH_TIMEOUT = 10  # segundos
 DEFAULT_CODE_REQUIRED_ARM = False
 DEFAULT_CODE_REQUIRED_DISARM = False
 # Formato: intervalos e/ou números individuais separados por ponto e

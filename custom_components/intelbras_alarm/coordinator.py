@@ -335,7 +335,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # disparar automações por engano. Em vez disso, tratamos como
             # falha de leitura, igual a uma queda de conexão: cai no mesmo
             # mecanismo de tolerância de _handle_poll_failure() (silencioso
-            # se isolado, dentro dos 8s de tolerância; escala pra
+            # se isolado, dentro dos 10s de tolerância; escala pra
             # indisponível de verdade só se persistir) — nenhuma entidade
             # muda de valor por causa de uma leitura isolada incompleta.
             expected_len = FAMILY_STATUS_LEN.get(self.family)
@@ -414,7 +414,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         feedback rápido, não silêncio tolerado.
 
         Tolerância: se o tempo desde a última consulta bem-sucedida ainda
-        está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (8s por
+        está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (10s por
         padrão), a falha vira só um aviso no log — as entidades continuam
         "disponíveis", mostrando o último dado bom conhecido, e a próxima
         tentativa (0,25s depois, por padrão) tenta de novo normalmente.

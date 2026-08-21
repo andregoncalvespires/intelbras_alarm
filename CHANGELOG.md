@@ -21,8 +21,9 @@ consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
   real de disparar automações por engano. Agora: uma ocorrência isolada
   não altera nenhum valor de entidade (mantém o último dado bom
   conhecido); só escala para "indisponível" se o problema persistir além
-  da janela de tolerância (8s por padrão) — mesma proteção contra
-  travamento silencioso já usada para quedas de conexão reais.
+  da janela de tolerância (10s por padrão — ajustado de 8s durante o
+  período de teste desta pré-lançamento, mesma versão) — mesma proteção
+  contra travamento silencioso já usada para quedas de conexão reais.
 
 ## [2.0.1]
 
