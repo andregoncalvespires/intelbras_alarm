@@ -721,10 +721,20 @@ EVENT_CODE_TABLE: dict[int, tuple[str, str]] = {
     160: ("1410", "Acesso remoto pelo software de download/upload"),
     163: ("1602", "Teste periódico"),
     137: ("1333", "Problema em teclado ou receptor"),
-    45: ("3333", "Restauração problema em teclado ou receptor"),
     167: ("3301", "Restauração falha na rede elétrica"),
     13: ("1625", "Data e hora foram reiniciadas"),
     143: ("1311", "Bateria principal ausente ou invertida"),
+    # Os 5 abaixo foram confirmados posteriormente, num trabalho paralelo
+    # de captura própria (mesma metodologia dos 17 originais: captura real
+    # cruzada com a tela do app AMT Remoto Desktop) — inclui a correção de
+    # que o byte 45 na verdade mapeia para 3531, não 3333 (o 3333 correto
+    # é o byte 9; a atribuição original do 45 estava errada).
+    9: ("3333", "Restauração problema em teclado ou receptor"),
+    45: ("3531", "Dispositivo Encontrado"),
+    47: ("3361", "Keep alive ethernet recuperado"),
+    158: ("1354", "Falha ao comunicar evento"),
+    165: ("1621", "Reset do buffer de eventos"),
+    175: ("1361", "Falha keep alive ethernet"),
 }
 
 _EVENT_PARTITION_LETTERS = {0: "-", 1: "A", 2: "B", 3: "C", 4: "D"}

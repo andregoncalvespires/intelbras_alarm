@@ -10,6 +10,22 @@ consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 
 ## [2.0.2-beta.1] — pré-lançamento, não visível por padrão no HACS
 
+### Adicionado (nesta rodada)
+- 5 novos códigos de evento confirmados em `protocol.EVENT_CODE_TABLE`
+  (leitura de eventos via EEPROM), a partir de um trabalho paralelo de
+  captura própria — mesma metodologia dos 17 originais: `9`→`3333`
+  ("Restauração problema em teclado ou receptor"), `47`→`3361` ("Keep
+  alive ethernet recuperado"), `158`→`1354` ("Falha ao comunicar
+  evento"), `165`→`1621` ("Reset do buffer de eventos"), `175`→`1361`
+  ("Falha keep alive ethernet"). Tabela agora com 22 códigos
+  confirmados (era 17).
+
+### Corrigido (nesta rodada)
+- **Atribuição errada no byte `45`**: mapeava para o código `3333`
+  ("Restauração problema em teclado ou receptor") — na verdade
+  corresponde ao código `3531` ("Dispositivo Encontrado"). O código
+  `3333` correto é o byte `9` (novo, ver acima).
+
 ### Corrigido
 - **Resposta de status com tamanho inesperado** (ex.: bug conhecido do
   firmware 6.2 da AMT 4010 SMART) deixa de ser tratada como "sucesso com
