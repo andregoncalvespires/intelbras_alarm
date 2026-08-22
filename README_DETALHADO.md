@@ -1159,10 +1159,21 @@ palpite. Ver `protocol.EVENT_CODE_TABLE`.
 | `160` | 1410 | Acesso remoto pelo software de download/upload |
 | `163` | 1602 | Teste periódico |
 | `137` | 1333 | Problema em teclado ou receptor |
-| `45` | 3333 | Restauração problema em teclado ou receptor |
 | `167` | 3301 | Restauração falha na rede elétrica |
 | `13` | 1625 | Data e hora foram reiniciadas |
 | `143` | 1311 | Bateria principal ausente ou invertida |
+| `9` | 3333 | Restauração problema em teclado ou receptor |
+| `45` | 3531 | Dispositivo Encontrado |
+| `47` | 3361 | Keep alive ethernet recuperado |
+| `158` | 1354 | Falha ao comunicar evento |
+| `165` | 1621 | Reset do buffer de eventos |
+| `175` | 1361 | Falha keep alive ethernet |
+
+> Os 5 últimos da tabela foram confirmados posteriormente, num trabalho
+> paralelo de captura própria — mesma metodologia dos 17 originais.
+> Nessa rodada, também corrigimos uma atribuição: o byte `45` na
+> verdade corresponde ao código `3531` ("Dispositivo Encontrado"), não
+> `3333` como estava antes — o `3333` correto é o byte `9`.
 
 ---
 

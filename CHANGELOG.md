@@ -8,6 +8,18 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.5] — EXPERIMENTAL, branch `dev`
+
+### Adicionado
+- 5 novos códigos de evento confirmados em `protocol.EVENT_CODE_TABLE`
+  (mesma correção aplicada em `main`/v2.0.2-beta.1): `9`→`3333`, `47`→`3361`,
+  `158`→`1354`, `165`→`1621`, `175`→`1361`. Tabela agora com 22 códigos
+  confirmados (era 17).
+
+### Corrigido
+- Byte `45` mapeava para `3333`, mas na verdade corresponde a `3531`
+  ("Dispositivo Encontrado") — o `3333` correto é o byte `9` (novo).
+
 ## [2.1.0-dev.4] — EXPERIMENTAL, branch `dev`
 
 ### Corrigido
