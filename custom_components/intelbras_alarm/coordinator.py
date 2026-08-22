@@ -168,6 +168,49 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             name=f"Intelbras Alarm ({entry.title})",
             update_interval=timedelta(seconds=entry.options.get("polling_interval", 0.25)),
         )
+        # Guardado à parte pra poder restaurar depois de pause_polling()
+        # (ver logo abaixo) — self.update_interval pode ser zerado
+        # temporariamente, então precisamos lembrar o valor de verdade.
+        self._configured_polling_interval = self.update_interval
+
+    def pause_polling(self) -> None:
+        """Interrompe por completo o agendamento automático de consultas.
+
+        BUG REAL corrigido (relatado em produção, agosto/2026): antes desta
+        correção, desligar o switch "Conexão com a central" só fazia cada
+        *tentativa* de consulta falhar rápido (``UpdateFailed``, sem tentar
+        se comunicar de verdade) — mas o **agendador** do próprio
+        `DataUpdateCoordinator` (Home Assistant core) continuava se
+        reagendando sozinho, chamando `_async_update_data()` de novo e de
+        novo. Como cada tentativa desabilitada termina em ~0,000s, isso
+        criava um laço apertadíssimo (chegou a **milhares de chamadas por
+        segundo**, confirmado em log real), consumindo CPU à toa mesmo sem
+        nenhuma tentativa de comunicação de rede — só o próprio custo de
+        Python de levantar a exceção, formatar o log de debug do HA core
+        ("Finished fetching... success: False", gerado pelo próprio
+        `update_coordinator.py`, não por nós) e reagendar, repetidamente.
+
+        A correção: `update_interval = None` faz o agendador do HA core
+        (`_schedule_refresh()`) simplesmente **não agendar mais nada**
+        (`if self._update_interval_seconds is None: return`) — não é
+        "tentar rápido e falhar", é "não tentar mais até alguém pedir".
+        Chamado tanto ao desligar o switch manualmente (`switch.py`) quanto
+        na inicialização, se a integração já subir com o switch desligado
+        (`__init__.py`) — nesse segundo caso, sem isso, o primeiro listener
+        adicionado (`async_add_listener`, quando as entidades são criadas)
+        já dispararia um agendamento normal antes de qualquer consulta
+        sequer ter rodado uma vez.
+        """
+        self.update_interval = None
+
+    def resume_polling(self) -> None:
+        """Restaura o intervalo de consulta configurado, depois de pause_polling().
+
+        Não dispara uma consulta sozinho — quem chama continua responsável
+        por pedir um ciclo nova (``await coordinator.async_request_refresh()``),
+        exatamente como já era feito ao religar o switch.
+        """
+        self.update_interval = self._configured_polling_interval
 
     @property
     def max_zones(self) -> int:

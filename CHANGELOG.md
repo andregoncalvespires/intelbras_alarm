@@ -24,6 +24,21 @@ consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
   da janela de tolerância (10s por padrão — ajustado de 8s durante o
   período de teste desta pré-lançamento, mesma versão) — mesma proteção
   contra travamento silencioso já usada para quedas de conexão reais.
+- **CPU alta com o switch "Conexão com a central" desligado** (bug real
+  relatado em produção): desligar o switch fazia cada tentativa de
+  consulta falhar rapidamente (sem tentar se comunicar de verdade), mas o
+  **agendador** do próprio Home Assistant (`DataUpdateCoordinator`)
+  continuava se reagendando sozinho — como cada tentativa desabilitada
+  termina em ~0,000s, isso criava um laço apertado (milhares de chamadas
+  por segundo, confirmado em log real), consumindo CPU à toa mesmo sem
+  nenhuma tentativa de rede. Corrigido interrompendo o agendamento por
+  completo (`coordinator.pause_polling()`/`resume_polling()`) ao
+  desligar/religar o switch — e também na inicialização, se a integração
+  já subir com o switch desligado, evitando o mesmo laço desde o início.
+
+### Adicionado
+- Novo código de evento na tabela do Receptor IP: `3531` ("Dispositivo
+  Encontrado").
 
 ## [2.0.1]
 
