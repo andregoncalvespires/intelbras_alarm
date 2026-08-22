@@ -140,6 +140,10 @@ class IntelbrasConnectionSwitch(SwitchEntity):
         await self._client.set_enabled(True)
         await async_save_connection_enabled(self.hass, self._entry_id, True)
         self.async_write_ha_state()
+        # Restaura o agendamento automático de consultas (ver
+        # coordinator.pause_polling/resume_polling — corrige um bug real
+        # de CPU alta com o switch desligado) e já pede um ciclo novo.
+        self._coordinator.resume_polling()
         await self._coordinator.async_request_refresh()
 
     async def async_turn_off(self, **kwargs) -> None:
@@ -148,3 +152,10 @@ class IntelbrasConnectionSwitch(SwitchEntity):
         await self._client.set_enabled(False)
         await async_save_connection_enabled(self.hass, self._entry_id, False)
         self.async_write_ha_state()
+        # Interrompe o agendamento automático de consultas AGORA, sem
+        # esperar o próximo ciclo do coordinator "perceber" que está
+        # desligado — ver coordinator.pause_polling() para o porquê (bug
+        # real de CPU alta corrigido: o agendador do Home Assistant core
+        # continuava se reagendando sozinho, mesmo com cada tentativa
+        # falhando instantaneamente).
+        self._coordinator.pause_polling()

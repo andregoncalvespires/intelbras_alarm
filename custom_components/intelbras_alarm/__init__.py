@@ -99,6 +99,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # usuário ficaria sem forma de religar pela UI. Em vez disso, a
         # entrada é configurada normalmente, sem dados iniciais; as demais
         # entidades ficam "indisponíveis" até o switch ser ligado.
+        #
+        # coordinator.pause_polling() AQUI é essencial (bug real corrigido,
+        # ver docstring do método): sem isso, o primeiro listener adicionado
+        # quando as entidades forem criadas logo abaixo
+        # (`async_forward_entry_setups`) já dispararia o agendamento normal
+        # de consultas — e cada uma falharia instantaneamente (switch
+        # desligado), criando o mesmo laço de CPU alta desde a primeira
+        # inicialização, sem nem precisar desligar o switch manualmente.
+        coordinator.pause_polling()
         _LOGGER.info(
             "Conexão com a central Intelbras está desativada (switch); "
             "pulando a consulta inicial de status"

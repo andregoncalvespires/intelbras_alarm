@@ -325,7 +325,7 @@ EEPROM_EXTENDED_MIN_FIRMWARE: dict[str, tuple[int, int] | None] = {
 # Diferente da tabela usada na leitura de eventos via EEPROM
 # (protocol.EVENT_CODE_TABLE, limitada aos 17 bytes brutos já observados
 # em captura real), o protocolo Receptor IP transmite o código de 4
-# dígitos por extenso, dígito a dígito — então os 67 códigos abaixo já
+# dígitos por extenso, dígito a dígito — então os 68 códigos abaixo já
 # são todos diretamente utilizáveis, sem depender de observar cada um
 # numa captura real primeiro.
 #
@@ -404,6 +404,7 @@ RECEPTOR_IP_EVENT_TABLE: dict[str, str] = {
     "3408": "Ativação por uma tecla",
     "3422": "Desacionamento de PGM",
     "3456": "Ativação parcial",
+    "3531": "Dispositivo Encontrado",
 }
 
 # ---------------------------------------------------------------------------

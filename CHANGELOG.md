@@ -8,6 +8,22 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.4] — EXPERIMENTAL, branch `dev`
+
+### Corrigido
+- **CPU alta com o switch "Conexão com a central" desligado** (mesma
+  correção aplicada em `main`/v2.0.2-beta.1): o agendador do próprio Home
+  Assistant continuava se reagendando sozinho mesmo com o switch
+  desligado, criando um laço de milhares de chamadas por segundo (log
+  real confirmou). Corrigido com `coordinator.pause_polling()`/
+  `resume_polling()`, chamado ao desligar/religar o switch e também na
+  inicialização (equiparado ao caminho da AMT 8000 também, já que o
+  agendamento é compartilhado por todas as famílias).
+
+### Adicionado
+- Novo código de evento na tabela do Receptor IP: `3531` ("Dispositivo
+  Encontrado").
+
 ## [2.1.0-dev.3] — EXPERIMENTAL, branch `dev`
 
 ### Corrigido
