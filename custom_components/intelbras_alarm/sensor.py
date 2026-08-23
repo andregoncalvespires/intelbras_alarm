@@ -190,10 +190,11 @@ class IntelbrasLastCommandResultSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
 class IntelbrasRecentEventsSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
     """Eventos mais recentes lidos do log de eventos da central (EEPROM).
 
-    Só é útil em modelos/firmwares com acesso ao comando 0x5C para isso
-    (ver ``coordinator.supports_extended_eeprom`` e a tabela no README) —
-    nos demais, fica sempre indisponível, já que a leitura nunca é
-    tentada. Atualizado pelo serviço ``intelbras_alarm.read_events`` (ver
+    Só é útil em modelos/firmwares com acesso ao comando 0x5C (ver
+    ``coordinator.supports_extended_eeprom``) **ou** ao protocolo legado
+    opcional (ver ``coordinator.supports_legacy_eeprom``) — nos demais,
+    fica sempre indisponível, já que a leitura nunca é tentada.
+    Atualizado pelo serviço ``intelbras_alarm.read_events`` (ver
     alarm_control_panel.py), não pelo polling normal — chamar esse
     serviço é o que dispara a leitura.
 
@@ -217,7 +218,7 @@ class IntelbrasRecentEventsSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], 
 
     @property
     def available(self) -> bool:
-        return self.coordinator.supports_extended_eeprom
+        return self.coordinator.supports_extended_eeprom or self.coordinator.supports_legacy_eeprom
 
     @property
     def native_value(self) -> str | None:

@@ -8,6 +8,25 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.8] — EXPERIMENTAL, branch `dev`
+
+Equipara ao publicado em `main`/v2.0.2-beta.3: correções de bugs reais
+relatados em testes da leitura legada de EEPROM (dev.7).
+
+### Corrigido
+- **"Não foi possível conectar" ao tentar sincronizar zonas ou ler
+  eventos** (leitura legada): abria uma conexão TCP isolada e separada
+  da persistente — mas a central só aceita um cliente conectado por
+  vez. Corrigido reaproveitando a conexão persistente já existente
+  (`self.client`), igual às demais famílias (inclusive a AMT 8000, que
+  já seguia esse padrão).
+- **Botão "Sincronizar nomes de zona" não aparecia** para centrais
+  usando o caminho legado — condição de criação do botão só checava
+  `supports_extended_eeprom`. Mesma lacuna corrigida em mais dois
+  pontos: sincronização automática na configuração inicial
+  (`__init__.py`) e disponibilidade da entidade "Últimos eventos"
+  (`sensor.py`).
+
 ## [2.1.0-dev.7] — EXPERIMENTAL, branch `dev`
 
 ### Adicionado
