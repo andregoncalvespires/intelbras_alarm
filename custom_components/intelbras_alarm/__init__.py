@@ -69,7 +69,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if connection_enabled:
         await coordinator.async_config_entry_first_refresh()
 
-        if coordinator.supports_extended_eeprom:
+        if coordinator.supports_extended_eeprom or coordinator.supports_legacy_eeprom:
             try:
                 await coordinator.async_refresh_zone_names()
             except Exception:  # noqa: BLE001

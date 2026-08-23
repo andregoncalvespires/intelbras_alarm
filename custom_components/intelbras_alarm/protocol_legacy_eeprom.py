@@ -129,13 +129,36 @@ def montar_comando_leitura(endereco: int, quantidade: int) -> bytes:
     return bytes(frame_sem_checksum + [cs])
 
 
-def autenticacao_bem_sucedida(resposta: bytes) -> bool:
+def autenticacao_bem_sucedida(conteudo: bytes) -> bool:
     """``True`` se o byte de status da resposta de autenticação for
     ``0x50`` (sucesso, confirmado contra hardware real e contra o app
     oficial). Qualquer outro valor (ex.: ``0x53`` = senha incorreta) é
     tratado como falha.
+
+    ``conteudo`` é ``ParsedFrame.content`` (já sem os bytes de
+    ``[Nº Bytes][echo]`` do início nem o checksum do fim — ver
+    ``protocol.parse_frame()``) — **não** o frame bruto completo. O
+    byte de status fica na posição ``[1]`` desse conteúdo (equivale à
+    posição ``[3]`` do frame bruto completo).
     """
-    return len(resposta) > 3 and resposta[3] == 0x50
+    return len(conteudo) > 1 and conteudo[1] == 0x50
+
+
+def extrair_dados_leitura(conteudo: bytes, tamanho_esperado: int) -> bytes | None:
+    """Extrai os bytes úteis de uma resposta de leitura, descartando os
+    2 bytes de cabeçalho que sempre precedem os dados nesse protocolo
+    (confirmados em toda captura real analisada, constantes
+    independente do endereço lido).
+
+    ``conteudo`` é ``ParsedFrame.content`` (ver ``autenticacao_bem_sucedida``
+    acima). Devolve ``None`` se o conteúdo for menor que o esperado
+    (resposta truncada/incompleta), em vez de devolver dados parciais
+    silenciosamente.
+    """
+    dados = conteudo[2 : 2 + tamanho_esperado]
+    if len(dados) < tamanho_esperado:
+        return None
+    return dados
 
 
 def paginas(inicio: int, tamanho_pagina: int, fim: int, ultimo_tamanho: int):

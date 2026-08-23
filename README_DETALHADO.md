@@ -1226,12 +1226,20 @@ anteriores).
   confirmadas independentemente para os demais modelos fora do limiar
   do `0x5C` (assume-se o mesmo layout, por virem do mesmo trecho de
   código do app, não específico de modelo).
-- **Conexão isolada e descartável**, própria para essa operação — nunca
-  a conexão persistente usada no polling normal, e só roda sob demanda
-  (botão de sincronizar zonas / serviço `read_events`), nunca durante o
-  ciclo de consulta regular. Evita misturar dois protocolos diferentes
-  numa mesma conexão, e evita manter uma sessão autenticada
-  desnecessariamente aberta.
+- **Reaproveita a conexão persistente já existente** (`self.client`,
+  mesma usada no polling normal) — só roda sob demanda (botão de
+  sincronizar zonas / serviço `read_events`), nunca durante o ciclo de
+  consulta regular. A primeira versão desta funcionalidade tentava
+  abrir uma conexão TCP **isolada e separada**, pensando em evitar
+  misturar protocolos numa mesma conexão — só que a central **só
+  aceita um cliente conectado por vez**, então a segunda conexão
+  sempre falhava enquanto o polling normal já estivesse rodando (bug
+  real relatado em produção). Corrigido reaproveitando `self.client`
+  — o framing de baixo nível (`[Nº Bytes]` como primeiro byte) já é
+  genérico o suficiente pra funcionar com qualquer comando, `0xE7`
+  incluso. Isso, aliás, bate com o que a própria captura real do app
+  oficial mostrou: consulta de status normal e comandos `0xE7` na
+  **mesma** conexão, sem reabrir nada entre um e outro.
 
 **Ainda em aberto**: os endereços acima só foram confirmados numa
 central real (1016 NET); os três códigos de evento vistos numa leitura

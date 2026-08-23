@@ -8,6 +8,31 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.3] — pré-lançamento, não visível por padrão no HACS
+
+Correções de bugs reais relatados em testes da v2.0.2-beta.2, todos na
+funcionalidade nova de leitura legada de EEPROM.
+
+### Corrigido
+- **"Não foi possível conectar" ao tentar sincronizar zonas ou ler
+  eventos** (leitura legada): a implementação original abria uma
+  conexão TCP isolada e separada da persistente — mas a central só
+  aceita um cliente conectado por vez, então a segunda conexão sempre
+  falhava enquanto o polling normal já estava rodando. Corrigido
+  reaproveitando a conexão persistente já existente (`self.client`),
+  igual às demais famílias — bate, inclusive, com o que a própria
+  captura real do app oficial mostrou (status normal e comandos `0xE7`
+  na mesma conexão).
+- **Botão "Sincronizar nomes de zona" não aparecia** para centrais
+  usando o caminho legado (senha de leitura configurada): a condição
+  que decide se o botão é criado só checava `supports_extended_eeprom`,
+  nunca foi atualizada para incluir `supports_legacy_eeprom`. Mesmo
+  problema também corrigido em mais dois pontos que tinham a mesma
+  lacuna: a sincronização automática na configuração inicial
+  (`__init__.py`) e a disponibilidade da entidade "Últimos eventos"
+  (`sensor.py`), que ficaria sempre indisponível mesmo depois de uma
+  leitura de eventos bem-sucedida.
+
 ## [2.0.2-beta.2] — pré-lançamento, não visível por padrão no HACS
 
 ### Adicionado

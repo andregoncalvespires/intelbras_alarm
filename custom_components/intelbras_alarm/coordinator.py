@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import time
 from datetime import datetime, timedelta
@@ -835,75 +834,69 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # SE o usuário configurou a senha de leitura de mensagens. Ver
     # supports_legacy_eeprom e protocol_legacy_eeprom.py.
     #
-    # Usa uma conexão TCP isolada e descartável, própria pra essa
-    # operação — NÃO reaproveita a conexão persistente já usada pro
-    # polling normal (ISECMobile), por dois motivos: (1) é literalmente
-    # outro protocolo, misturar na mesma conexão arrisca confundir
-    # qualquer um dos dois lados; (2) só roda sob demanda (botão de
-    # sincronizar zonas / serviço read_events), nunca no ciclo de
-    # polling — não precisa ficar aberta.
+    # CORRIGIDO (bug real relatado em produção): a versão original desta
+    # função abria uma conexão TCP ISOLADA e separada da persistente, na
+    # suposição de que isso seria mais seguro (evitar misturar dois
+    # protocolos numa mesma conexão). Só que a central **só aceita um
+    # cliente conectado por vez** — mesma restrição já documentada em
+    # config_flow.py sobre validar senha nova — então a segunda conexão
+    # sempre falhava com "Não foi possível conectar", já que a conexão
+    # persistente do polling normal já está aberta o tempo todo. Corrigido
+    # reaproveitando ``self.client`` (a mesma conexão persistente já
+    # usada pra tudo mais) — o framing de baixo nível ([Nº Bytes] como
+    # primeiro byte) é genérico o suficiente pra funcionar com qualquer
+    # comando, `0xE7` incluso (`protocol.parse_frame()` não assume nenhum
+    # comando específico).
     # ------------------------------------------------------------------
     async def _async_legacy_eeprom_session(self, paginas_info: list[tuple[int, int]]) -> bytes:
-        """Abre conexão isolada, autentica com a senha de leitura, lê
-        todas as páginas pedidas em sequência, fecha a conexão.
+        """Autentica com a senha de leitura e lê todas as páginas pedidas
+        em sequência, na conexão persistente já existente.
 
         ``paginas_info`` é uma lista de (endereço, tamanho) — ver
         ``protocol_legacy_eeprom.paginas()``.
         """
-        host = self.entry.data["host"]
-        port = self.entry.data["port"]
+        frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
         try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_connection(host, port), timeout=5
+            resposta_auth = await self.client.send_command(
+                frame_auth, context="identificação (senha de leitura de mensagens)"
             )
-        except (OSError, asyncio.TimeoutError) as err:
-            raise UpdateFailed(
-                f"Não foi possível conectar a {host}:{port} para leitura "
-                f"legada de EEPROM: {err}"
-            ) from err
+        except PanelConnectionError as err:
+            raise UpdateFailed(str(err)) from err
+        if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+            raise HomeAssistantError(
+                "Falha na identificação com a senha de leitura de mensagens "
+                "configurada — confira se está correta (6 dígitos, "
+                "\"Senha Acesso Remoto\" no app AMT Mobile)"
+            )
+        await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
 
-        try:
-            frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
-            writer.write(frame_auth)
-            await writer.drain()
+        dados = bytearray()
+        for endereco, tamanho in paginas_info:
+            frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
             try:
-                resposta_auth = await asyncio.wait_for(reader.read(4096), timeout=5)
-            except asyncio.TimeoutError as err:
-                raise UpdateFailed(
-                    "Sem resposta da central à identificação (senha de leitura de mensagens)"
-                ) from err
-            if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth):
-                raise HomeAssistantError(
-                    "Falha na identificação com a senha de leitura de mensagens "
-                    "configurada — confira se está correta (6 dígitos, "
-                    "\"Senha Acesso Remoto\" no app AMT Mobile)"
+                resposta = await self.client.send_command(
+                    frame, context=f"leitura legada de EEPROM 0x{endereco:04X}"
                 )
+            except PanelConnectionError as err:
+                raise UpdateFailed(str(err)) from err
+            if not resposta.valid_checksum:
+                raise UpdateFailed(
+                    f"Checksum inválido lendo EEPROM legada no endereço 0x{endereco:04X}"
+                )
+            # content = [2 bytes de cabeçalho, sempre presentes nesse
+            # protocolo — confirmados em toda captura real analisada,
+            # não dependem do endereço] + dados úteis. Ver
+            # README_DETALHADO.md, seção "Protocolo legado".
+            dados_uteis = legacy_eeprom.extrair_dados_leitura(resposta.content, tamanho)
+            if dados_uteis is None:
+                raise UpdateFailed(
+                    f"Resposta incompleta lendo EEPROM legada no endereço "
+                    f"0x{endereco:04X}: recebidos {len(resposta.content)} bytes de "
+                    f"conteúdo, esperados pelo menos {2 + tamanho}"
+                )
+            dados += dados_uteis
             await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
-
-            dados = bytearray()
-            for endereco, tamanho in paginas_info:
-                frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
-                writer.write(frame)
-                await writer.drain()
-                try:
-                    resposta = await asyncio.wait_for(reader.read(4096), timeout=5)
-                except asyncio.TimeoutError as err:
-                    raise UpdateFailed(
-                        f"Sem resposta lendo EEPROM legada no endereço 0x{endereco:04X}"
-                    ) from err
-                if len(resposta) < 4 + tamanho:
-                    raise UpdateFailed(
-                        f"Resposta incompleta lendo EEPROM legada no endereço "
-                        f"0x{endereco:04X}: recebidos {len(resposta)} bytes, "
-                        f"esperados pelo menos {4 + tamanho}"
-                    )
-                dados += resposta[4 : 4 + tamanho]
-                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
-            return bytes(dados)
-        finally:
-            writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+        return bytes(dados)
 
     async def _async_refresh_zone_names_legacy(self) -> dict[int, str]:
         paginas_info = list(
