@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 
 from .const import (
     ACK_OK,
+    AMT8000_ALL_PARTITIONS,
     AMT8000_EVENT_BUFFER_SIZE,
     AMT8000_MODE_ARM,
     AMT8000_MODE_DISARM,
@@ -528,21 +529,23 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 raise UpdateFailed("Checksum inválido na resposta de status (AMT 8000)")
 
             # Equiparação com a mesma proteção aplicada às demais famílias
-            # (ver _async_update_data acima) — mas com um critério mais
-            # cauteloso: AMT8000_STATUS_MAX_LEN (152 bytes) é um valor
-            # ESTIMADO a partir de um fluxo de terceiros, nunca confirmado
-            # contra hardware real (protocolo inteiro ainda é experimental).
-            # Por isso, ao contrário de FAMILY_STATUS_LEN (comparação exata,
-            # validada em campo há muito tempo para 2018/4010), aqui só
-            # tratamos como falha uma resposta MUITO menor que o esperado
-            # (abaixo de 50%) — o suficiente para pegar um caso claramente
-            # truncado/corrompido sem arriscar rejeitar respostas válidas só
-            # porque o tamanho real diverge um pouco da estimativa.
+            # (ver _async_update_data acima) — com um critério ainda um
+            # pouco mais cauteloso que FAMILY_STATUS_LEN: AMT8000_STATUS_MAX_LEN
+            # (143 bytes, só o conteúdo — response.content já vem sem
+            # cabeçalho/opcode/checksum) agora é um valor CONFIRMADO em
+            # hardware real (projeto de terceiros
+            # fdaneluzzi/homeassistant-amt8000, cruzado com nossa análise),
+            # não mais uma estimativa — mas os OFFSETS dos campos dentro
+            # desse conteúdo continuam sem validação própria (protocolo
+            # ainda experimental). Por isso mantemos a margem de 50%, em
+            # vez de comparação exata: pega qualquer truncamento claro sem
+            # arriscar rejeitar uma resposta válida por uma diferença
+            # pequena entre modelos/firmwares que ainda não vimos.
             if len(response.content) < (AMT8000_STATUS_MAX_LEN // 2):
                 raise UpdateFailed(
                     f"Resposta de status da AMT 8000 muito curta: recebidos "
-                    f"{len(response.content)} bytes, esperado algo próximo de "
-                    f"{AMT8000_STATUS_MAX_LEN}. Conteúdo recebido: "
+                    f"{len(response.content)} bytes, esperado {AMT8000_STATUS_MAX_LEN} "
+                    f"(conteúdo, sem framing). Conteúdo recebido: "
                     f"{response.content.hex(' ').upper()}"
                 )
 
@@ -654,7 +657,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     async def async_arm(self, partition: str | None, stay: bool, password: str | None = None) -> None:
         if self.family == FAMILY_8000:
             mode = AMT8000_MODE_STAY if stay else AMT8000_MODE_ARM
-            partition_num = int(partition) if partition is not None else 0
+            partition_num = int(partition) if partition is not None else AMT8000_ALL_PARTITIONS
             frame = amt8000.cmd_arm_disarm(partition_num, mode)
             label = f"Ativar {_partition_label(partition)}" + (" (Stay)" if stay else "")
             await self._send_and_check_amt8000(frame, label)
@@ -672,7 +675,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
     async def async_disarm(self, partition: str | None, password: str | None = None) -> None:
         if self.family == FAMILY_8000:
-            partition_num = int(partition) if partition is not None else 0
+            partition_num = int(partition) if partition is not None else AMT8000_ALL_PARTITIONS
             frame = amt8000.cmd_arm_disarm(partition_num, AMT8000_MODE_DISARM)
             label = f"Desativar {_partition_label(partition)}"
             await self._send_and_check_amt8000(frame, label)

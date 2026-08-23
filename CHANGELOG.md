@@ -8,6 +8,40 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.6] — EXPERIMENTAL, branch `dev`
+
+Ajustes a partir da comparação com o projeto de terceiros
+`fdaneluzzi/homeassistant-amt8000` (testado em hardware real), com
+decisões explícitas do usuário sobre quais pontos aplicar.
+
+### Corrigido
+- **Arme/desarme de "central inteira"**: usava `0` (herdado sem
+  confirmação do fluxo Node-RED de referência) — corrigido para `0xFF`
+  (`const.AMT8000_ALL_PARTITIONS`), valor confirmado em hardware real
+  pelo `fdaneluzzi`. Partições individuais (1-16) não mudam.
+- **`AMT8000_STATUS_MAX_LEN`**: era `152` (na verdade o tamanho do
+  frame *total*, incluindo framing) — corrigido para `143`, o tamanho
+  real do *conteúdo* (`response.content` já vem sem cabeçalho/opcode/
+  checksum, então é contra isso que a checagem deveria comparar).
+  Agora um valor confirmado em hardware real (mesmo projeto de
+  terceiros), não mais uma estimativa — mas os offsets dos campos
+  dentro do conteúdo continuam sem validação própria, então a checagem
+  de truncamento manteve a mesma margem cautelosa (50%), sem perda de
+  robustez.
+- Documentação (`README_DETALHADO.md`): corrigida a descrição das
+  partições no status (1 byte por partição, não 1 bit — a doc estava
+  desatualizada em relação ao código).
+
+### Mantido, sem alteração (decisão explícita do usuário)
+- Modelo de conexão (persistente, não por-operação) — traz benefícios
+  reais para automações e resposta em tempo quase real; mantido mesmo
+  sabendo que o `fdaneluzzi` usa conexão por operação.
+- Codificação da senha na autenticação — sem certeza suficiente para
+  mudar, mantida como está.
+- Os achados novos do `fdaneluzzi` sem equivalente aqui (detecção de
+  zonas abertas bloqueando o arme, códigos de erro de autenticação) —
+  não implementados nesta rodada.
+
 ## [2.1.0-dev.5] — EXPERIMENTAL, branch `dev`
 
 ### Adicionado

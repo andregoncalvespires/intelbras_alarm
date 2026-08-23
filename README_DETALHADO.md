@@ -703,21 +703,31 @@ zonas de uma vez. `coordinator.async_bypass_zones()` já trata isso:
 para `FAMILY_8000`, envia um frame por zona, em loop; para as demais
 famílias, continua enviando o comando absoluto único.
 
+**Arme/desarme de "central inteira"**: usa `0xFF`
+(`const.AMT8000_ALL_PARTITIONS`) no byte de partição do comando
+`0x401E` — corrigido de `0` (herdado sem confirmação do fluxo Node-RED
+de referência) para `0xFF`, valor confirmado em hardware real pelo
+projeto de terceiros `fdaneluzzi/homeassistant-amt8000`. Partições
+individuais (1-16) continuam informando o próprio número.
+
 ### Status completo (`0x0B4A`)
 
-Blob de **~152 bytes** (`const.AMT8000_STATUS_MAX_LEN`) — valor
-**estimado** a partir do fluxo de referência de terceiros, nunca
-confirmado byte a byte contra uma captura real. Por isso, diferente das
+Blob de **143 bytes** de conteúdo (`const.AMT8000_STATUS_MAX_LEN`) —
+valor **confirmado** contra hardware real pelo projeto de terceiros
+`fdaneluzzi/homeassistant-amt8000` (não é mais uma estimativa). Mesmo
+assim, os *offsets* dos campos dentro desse conteúdo continuam sem
+validação própria (protocolo ainda experimental) — por isso a checagem
+de tamanho truncado para a AMT 8000 segue com uma margem cautelosa (só
+trata como falha se vier abaixo de 50% do esperado), diferente das
 demais famílias (`FAMILY_STATUS_LEN`, comparação exata, validada em
-campo há muito tempo), a checagem de tamanho truncado para a AMT 8000
-usa uma margem cautelosa — só trata como falha se vier abaixo de 50% do
-esperado, para não arriscar rejeitar respostas válidas só por causa de
-uma estimativa imprecisa (ver "Diagnóstico de resposta com tamanho
-inesperado" mais abaixo, agora compartilhado entre todas as famílias).
+campo há muito tempo) — ver "Diagnóstico de resposta com tamanho
+inesperado" mais abaixo, agora compartilhado entre todas as famílias.
 
 Offsets mapeados (todos por engenharia reversa, não confirmados em
-campo): zonas (1-64, bitfields de aberta/violada/anulada/bateria-baixa/
-tamper/falha-comunicação), partições (1-16, 1 bit cada), data/hora em
+campo por captura própria): zonas (1-64, bitfields de aberta/violada/
+anulada/bateria-baixa/tamper/falha-comunicação), partições (1-16, **1
+byte por partição**, não 1 bit — bit 0 de cada byte, invertido: 0 =
+armada), data/hora em
 BCD, bateria (enum de 4 níveis: 0/33/66/100%), PGMs, sirene, AC/bateria.
 
 ### Leitura de eventos (`0x3900`)

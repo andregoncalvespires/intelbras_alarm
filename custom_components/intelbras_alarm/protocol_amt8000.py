@@ -162,8 +162,12 @@ def cmd_status() -> bytes:
 def cmd_arm_disarm(partition: int, mode: int) -> bytes:
     """Monta o comando de arme/desarme/stay (``0x401E``) para uma partição (1-16).
 
-    ``partition=0`` é usado pelo fluxo de referência para "central inteira"
-    — reproduzido aqui, ainda não confirmado por captura própria.
+    ``partition=0xFF`` (``const.AMT8000_ALL_PARTITIONS``) é usado para
+    "central inteira" — corrigido de ``0`` (herdado sem confirmação do
+    fluxo Node-RED de referência) para ``0xFF``, valor confirmado em
+    hardware real pelo projeto de terceiros
+    fdaneluzzi/homeassistant-amt8000 (``ALL_PARTITIONS``). Ainda não
+    validado por captura própria nesta implementação.
     """
     return _build_frame(AMT8000_CMD_ARM_DISARM, bytes([partition & 0xFF, mode & 0xFF]))
 

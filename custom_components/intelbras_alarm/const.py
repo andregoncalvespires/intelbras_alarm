@@ -55,10 +55,21 @@ AMT8000_MODE_STAY = 0x02
 
 AMT8000_ZONE_COUNT = 64
 AMT8000_PARTITION_COUNT = 16
+AMT8000_ALL_PARTITIONS = 0xFF  # valor pra "central inteira" no comando de
+# arme/desarme (0x401E) -- corrigido de 0 (herdado sem confirmação do fluxo
+# Node-RED de referência) para 0xFF, confirmado em hardware real pelo
+# projeto de terceiros fdaneluzzi/homeassistant-amt8000 (ALL_PARTITIONS).
+# Ver CHANGELOG.md e a comparação com esse repositório.
 AMT8000_PGM_COUNT = 16
 AMT8000_EVENT_BUFFER_SIZE = 512  # posições do buffer circular (mapa de EEPROM)
 AMT8000_EVENT_READ_BATCH = 16  # nº de eventos lidos por chamada de AMT8000_CMD_READ_EVENTS
-AMT8000_STATUS_MAX_LEN = 152  # bytes do blob de status completo
+AMT8000_STATUS_MAX_LEN = 143  # bytes do CONTEÚDO do status (só payload, já
+# sem cabeçalho/opcode/checksum -- parse_frame() já retira isso em
+# ParsedFrameAmt8000.content). Corrigido de 152 (que na verdade era o
+# tamanho do FRAME TOTAL, incluindo os 9 bytes de framing) para 143,
+# confirmado em hardware real pelo projeto de terceiros
+# fdaneluzzi/homeassistant-amt8000 -- é isso que response.content mede,
+# então é contra isso que a checagem de tamanho deve comparar.
 
 # Diretório dentro de /media onde as fotos de eventos são salvas (entidade
 # camera) — ver decisão de arquitetura registrada no histórico do projeto.
