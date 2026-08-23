@@ -1,6 +1,8 @@
 """Coordenador de atualização de dados da central de alarme Intelbras."""
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 import time
 from datetime import datetime, timedelta
@@ -11,10 +13,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import protocol_legacy_eeprom as legacy_eeprom
 from .const import (
     ACK_OK,
     CMD_EEPROM_READ,
     CONF_ENABLED_ZONES,
+    CONF_LEGACY_EEPROM_PASSWORD,
     DEFAULT_CONNECTION_HEALTH_TIMEOUT,
     DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_REQUEST_TIMEOUT,
@@ -84,6 +88,13 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self._partition_passwords = partition_passwords or {}
         self.family = family
         self.model_key = model_key
+        # Senha opcional de leitura de mensagens (0xE7 + identificação),
+        # ver protocol_legacy_eeprom.py e supports_legacy_eeprom abaixo.
+        # Em branco por padrão -- só habilita a funcionalidade se o
+        # usuário preencher explicitamente na configuração.
+        self._legacy_eeprom_password: str | None = entry.data.get(
+            CONF_LEGACY_EEPROM_PASSWORD
+        ) or None
         self.zone_names: dict[int, str] = {}
         # Eventos mais recentes já lidos (limitado a
         # EVENT_ENTITY_RECENT_COUNT, ordenados do mais novo pro mais
@@ -246,12 +257,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         precisam dessa senha adicional para sincronizar nomes/eventos —
         e, por extensão, são as que têm esse caminho (0x5C) liberado.
 
-        Fora dessa lista — inclusive a AMT 1016 NET com qualquer firmware,
-        mesmo sendo suportada normalmente pelo resto desta integração —
-        a central usa um protocolo legado diferente (comando 0xE7), que
-        não implementamos aqui por ser mais arriscado (já causou um
-        travamento real de central durante os testes). Ver
-        README_DETALHADO.md, seção de limitações conhecidas.
+        Fora dessa lista, ver ``supports_legacy_eeprom`` abaixo — essas
+        centrais usam um protocolo diferente (comando 0xE7 +
+        identificação por senha de 6 dígitos), implementado
+        separadamente em ``protocol_legacy_eeprom.py``.
         """
         if self.data is None:
             return False
@@ -266,6 +275,29 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         except (ValueError, AttributeError):
             return False
         return atual >= minimo
+
+    @property
+    def supports_legacy_eeprom(self) -> bool:
+        """Se esta central pode ler nomes de zona/usuário e eventos pelo
+        protocolo legado (comando ``0xE7`` + identificação por senha de
+        6 dígitos, ``protocol_legacy_eeprom.py``) — alternativa ao
+        ``0x5C`` para os modelos/firmwares fora da lista de
+        ``supports_extended_eeprom``.
+
+        Requer duas condições: (1) o modelo/firmware realmente **não**
+        tem acesso ao ``0x5C`` (senão, o caminho moderno é sempre
+        preferido) e (2) a senha de 6 dígitos foi configurada
+        explicitamente (``const.CONF_LEGACY_EEPROM_PASSWORD``) — em
+        branco por padrão, funcionalidade desligada até o usuário optar
+        por ativá-la.
+
+        Confirmado funcionando em hardware real (AMT 1016 NET, firmware
+        3.1) — ver docstring de ``protocol_legacy_eeprom.py`` para os
+        detalhes da validação.
+        """
+        if self.supports_extended_eeprom:
+            return False
+        return self._legacy_eeprom_password is not None
 
     def zone_enabled_by_default(self, zone: int) -> bool:
         """Se a zona deve nascer habilitada no registro de entidades.
@@ -798,10 +830,119 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             raise HomeAssistantError(err.message) from err
 
     # ------------------------------------------------------------------
+    # Protocolo legado (0xE7 + identificação) — nomes de zona/usuário e
+    # eventos para modelos/firmwares fora do supports_extended_eeprom,
+    # SE o usuário configurou a senha de leitura de mensagens. Ver
+    # supports_legacy_eeprom e protocol_legacy_eeprom.py.
+    #
+    # Usa uma conexão TCP isolada e descartável, própria pra essa
+    # operação — NÃO reaproveita a conexão persistente já usada pro
+    # polling normal (ISECMobile), por dois motivos: (1) é literalmente
+    # outro protocolo, misturar na mesma conexão arrisca confundir
+    # qualquer um dos dois lados; (2) só roda sob demanda (botão de
+    # sincronizar zonas / serviço read_events), nunca no ciclo de
+    # polling — não precisa ficar aberta.
+    # ------------------------------------------------------------------
+    async def _async_legacy_eeprom_session(self, paginas_info: list[tuple[int, int]]) -> bytes:
+        """Abre conexão isolada, autentica com a senha de leitura, lê
+        todas as páginas pedidas em sequência, fecha a conexão.
+
+        ``paginas_info`` é uma lista de (endereço, tamanho) — ver
+        ``protocol_legacy_eeprom.paginas()``.
+        """
+        host = self.entry.data["host"]
+        port = self.entry.data["port"]
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=5
+            )
+        except (OSError, asyncio.TimeoutError) as err:
+            raise UpdateFailed(
+                f"Não foi possível conectar a {host}:{port} para leitura "
+                f"legada de EEPROM: {err}"
+            ) from err
+
+        try:
+            frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
+            writer.write(frame_auth)
+            await writer.drain()
+            try:
+                resposta_auth = await asyncio.wait_for(reader.read(4096), timeout=5)
+            except asyncio.TimeoutError as err:
+                raise UpdateFailed(
+                    "Sem resposta da central à identificação (senha de leitura de mensagens)"
+                ) from err
+            if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth):
+                raise HomeAssistantError(
+                    "Falha na identificação com a senha de leitura de mensagens "
+                    "configurada — confira se está correta (6 dígitos, "
+                    "\"Senha Acesso Remoto\" no app AMT Mobile)"
+                )
+            await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+
+            dados = bytearray()
+            for endereco, tamanho in paginas_info:
+                frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
+                writer.write(frame)
+                await writer.drain()
+                try:
+                    resposta = await asyncio.wait_for(reader.read(4096), timeout=5)
+                except asyncio.TimeoutError as err:
+                    raise UpdateFailed(
+                        f"Sem resposta lendo EEPROM legada no endereço 0x{endereco:04X}"
+                    ) from err
+                if len(resposta) < 4 + tamanho:
+                    raise UpdateFailed(
+                        f"Resposta incompleta lendo EEPROM legada no endereço "
+                        f"0x{endereco:04X}: recebidos {len(resposta)} bytes, "
+                        f"esperados pelo menos {4 + tamanho}"
+                    )
+                dados += resposta[4 : 4 + tamanho]
+                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+            return bytes(dados)
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def _async_refresh_zone_names_legacy(self) -> dict[int, str]:
+        paginas_info = list(
+            legacy_eeprom.paginas(
+                legacy_eeprom.NAMES_START,
+                legacy_eeprom.NAMES_PAGE,
+                legacy_eeprom.NAMES_END,
+                legacy_eeprom.NAMES_LAST,
+            )
+        )
+        dados = await self._async_legacy_eeprom_session(paginas_info)
+        resultado = legacy_eeprom.parse_nomes(dados)
+        self.zone_names = resultado.zonas
+        self.async_update_listeners()
+        return resultado.zonas
+
+    async def _async_read_events_legacy(self) -> list[dict]:
+        paginas_info = list(
+            legacy_eeprom.paginas(
+                legacy_eeprom.EVENTS_START,
+                legacy_eeprom.EVENTS_PAGE,
+                legacy_eeprom.EVENTS_END,
+                legacy_eeprom.EVENTS_LAST,
+            )
+        )
+        dados = await self._async_legacy_eeprom_session(paginas_info)
+        registros = legacy_eeprom.parse_eventos(dados)
+        registros.sort(key=lambda e: e["data_hora"], reverse=True)
+        self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
+        self.async_update_listeners()
+        return registros
+
+    # ------------------------------------------------------------------
     # Nomes de zona (EEPROM, apenas família 4010)
     # ------------------------------------------------------------------
     async def async_refresh_zone_names(self) -> dict[int, str]:
         """Lê os nomes de todas as zonas gravados na EEPROM da central."""
+        if self.supports_legacy_eeprom:
+            return await self._async_refresh_zone_names_legacy()
         if not self.supports_extended_eeprom:
             return {}
 
@@ -848,6 +989,8 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         "Últimos eventos" — independente de quantos eventos válidos
         existirem no total.
         """
+        if self.supports_legacy_eeprom:
+            return await self._async_read_events_legacy()
         if not self.supports_extended_eeprom:
             raise HomeAssistantError(
                 "Este modelo/firmware não tem acesso à leitura de eventos "

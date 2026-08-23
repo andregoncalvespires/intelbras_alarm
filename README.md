@@ -86,8 +86,14 @@ adicione a URL deste repositório (categoria Integração) → instale
    escuta (padrão `9010`) — ver seção própria mais abaixo. Desligado por
    padrão; precisa de configuração adicional **na própria central**, fora
    desta integração.
-6. O **modelo é detectado automaticamente** — sem campo manual.
-7. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
+6. Opcional: **senha de leitura de mensagens (6 dígitos)** — deixe em
+   branco se seu modelo já aparece na lista de "Nomes de zona e log de
+   eventos" abaixo. Preencha (a mesma "Senha Acesso Remoto" do app AMT
+   Mobile) só se sua central ficar de fora dessa lista e você mesmo
+   assim quiser nomes de zona/usuário e eventos — usa um protocolo
+   alternativo, confirmado funcionando em hardware real.
+7. O **modelo é detectado automaticamente** — sem campo manual.
+8. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
    diferentes por partição (A/B/C/D), se sua central tiver — opcional,
    deixe em branco para usar a senha principal em todas.
 
@@ -177,12 +183,13 @@ pede a "Senha de Acesso Remoto" para essas duas funções:
 | AMN 24 NET | qualquer |
 
 Fora dessa lista (por exemplo, uma AMT 1016 NET com firmware abaixo de
-4.10 — inclusive a central usada para testar esta integração, que está
-no firmware 3.1), a central usa um protocolo diferente e mais antigo, que
-esta integração **não implementa de propósito** — uma tentativa real de
-usá-lo travou a comunicação da central durante os testes. Nesses casos, o
-botão de sincronizar nomes de zona e o serviço de eventos simplesmente
-não fazem nada (a entidade "Últimos eventos" fica sempre indisponível).
+4.10), a central usa um protocolo diferente e mais antigo — que, a
+partir da v2.0.2-beta.2, **também é suportado**, opcionalmente: informe
+a "Senha de leitura de mensagens" (6 dígitos, a mesma "Senha Acesso
+Remoto" pedida pelo app AMT Mobile) na configuração da integração
+(deixe em branco se não quiser usar). Sem essa senha preenchida, o
+botão de sincronizar nomes de zona e o serviço de eventos continuam
+sem fazer nada, como antes.
 
 ## Serviço `intelbras_alarm.bypass_zone`
 

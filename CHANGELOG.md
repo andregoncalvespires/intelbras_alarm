@@ -8,6 +8,32 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.2] — pré-lançamento, não visível por padrão no HACS
+
+### Adicionado
+- **Nomes de zona/usuário e log de eventos para modelos/firmwares fora
+  do limiar do `0x5C`** (ex.: AMT 1016 NET com firmware antigo, que
+  antes ficava totalmente sem essa função). Novo caminho alternativo,
+  via protocolo legado (`0xE7` + identificação por senha de 6 dígitos),
+  confirmado funcionando de ponta a ponta em hardware real — leitura
+  completa de zonas, usuários e eventos, com texto batendo exatamente
+  com os nomes configurados na central.
+  - Novo módulo `protocol_legacy_eeprom.py`: framing, CRC próprio deste
+    protocolo (peculiaridade real: os 2 primeiros bytes carregam sem
+    passar pelo laço de deslocamento de CRC), autenticação (senha com
+    dígito `'0'` trocado por `'A'` antes de codificar — achado que
+    faltava numa tentativa anterior), leitura paginada, parsing de
+    nomes e eventos. Tudo validado byte a byte contra uma leitura real
+    completa fornecida pelo usuário antes de ser integrado.
+  - Novo campo de configuração **opcional**, em branco por padrão:
+    "Senha de leitura de mensagens (6 dígitos)" — só ativa essa função
+    se preenchido explicitamente; não afeta nenhuma central que já
+    tenha acesso normal via `0x5C`.
+  - Usa uma conexão TCP **isolada e descartável**, própria para essa
+    operação — nunca a conexão persistente usada no polling normal, e
+    só roda sob demanda (botão de sincronizar zonas / serviço
+    `read_events`), nunca durante o ciclo de consulta regular.
+
 ## [2.0.2-beta.1] — pré-lançamento, não visível por padrão no HACS
 
 ### Adicionado (nesta rodada)

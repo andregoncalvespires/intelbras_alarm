@@ -18,6 +18,12 @@ CONF_CODE_REQUIRED_DISARM = "code_required_disarm"
 CONF_ENABLED_ZONES = "enabled_zones"
 CONF_RECEPTOR_IP_ENABLED = "receptor_ip_enabled"
 CONF_RECEPTOR_IP_PORT = "receptor_ip_port"
+CONF_LEGACY_EEPROM_PASSWORD = "legacy_eeprom_password"  # opcional, 6
+# dígitos -- "Senha de leitura de mensagens"/"Senha Acesso Remoto" do
+# app oficial. Habilita nomes de zona/usuário e leitura de eventos via
+# protocolo legado (0xE7) nos modelos/firmwares que não alcançam o
+# limiar do comando moderno 0x5C (ver supports_extended_eeprom). Em
+# branco por padrão -- só é usado se o usuário preencher explicitamente.
 
 OPT_POLLING_INTERVAL = "polling_interval"
 
