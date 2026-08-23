@@ -1417,30 +1417,73 @@ não estão batendo com o comportamento real da central.
   novas — mas se duas anulações forem disparadas quase ao mesmo tempo
   (ex.: automação + botão manual), a mais recente pode não considerar uma
   anulação ainda não refletida no último status lido.
-- Nomes de zona e log de eventos **não estão disponíveis em todos os
-  modelos/firmwares suportados pelo resto da integração** — só nos
-  listados na seção "Nomes de zona e log de eventos" acima. Isso inclui
-  a **AMT 1016 NET com firmware abaixo de 4.10** (a central usada para
-  testar esta integração está no firmware 3.1, portanto fora da lista).
+- Nomes de zona e log de eventos, pelo caminho **moderno** (`0x5C`),
+  **não estão disponíveis em todos os modelos/firmwares suportados pelo
+  resto da integração** — só nos listados na seção "Nomes de zona e log
+  de eventos" acima. Fora dessa lista, ver a seção "Protocolo legado" a
+  seguir — desde a v2.1.0-dev.7, existe um caminho alternativo,
+  opcional (não se aplica à AMT 8000).
 
-### Protocolo legado (`0xE7`) de nomes/eventos: não implementado de propósito
+### Protocolo legado (`0xE7`) de nomes/eventos
 
-Para modelos/firmwares fora da lista de "Nomes de zona e log de eventos",
-a central usa um protocolo diferente e mais antigo (frames começando em
-`0xE7`, com um CRC-16 próprio, distinto do checksum simples usado no
-resto do protocolo). Esse protocolo foi parcialmente decifrado por
-engenharia reversa (decompilação do APK oficial + comparação com o
-projeto independente [`tarikbc/ha-intelbras-alarm`](https://github.com/tarikbc/ha-intelbras-alarm)),
-mas **uma tentativa real de uso travou a comunicação da central**
-durante os testes desta integração (parou de responder tanto pela
-integração quanto pelo app oficial; recuperou sozinha depois de alguns
-minutos, sem precisar de reset físico). Por esse motivo, **esse
-protocolo não foi implementado nesta integração** — o risco de travar
-uma central de segurança de verdade supera o valor de ter nomes/eventos
-nos poucos modelos/firmwares fora da lista suportada. Se você tem uma
-central nessa situação e quer nomes de zona/eventos mesmo assim, o
-caminho seria uma implementação separada e mais cautelosa desse
-protocolo — fora do escopo desta integração por ora.
+Para modelos/firmwares fora da lista de "Nomes de zona e log de
+eventos" (comando moderno `0x5C`) — por exemplo, a AMT 1016 NET com
+firmware abaixo de 4.10 — a central usa um protocolo diferente e mais
+antigo (frames começando em `0xE7`, com um CRC próprio, distinto do
+checksum simples usado no resto do protocolo). Não se aplica à AMT
+8000, que já tem acesso incondicional ao caminho moderno (ver
+`supports_extended_eeprom`).
+
+**Confirmado funcionando de ponta a ponta em hardware real** (AMT 1016
+NET, firmware 3.1) — autenticação bem-sucedida seguida de leitura
+completa de zonas, usuários, receptores/teclados e do log de eventos,
+com texto batendo exatamente com os nomes configurados na central.
+Implementado em `protocol_legacy_eeprom.py`, opcional e desligado por
+padrão — precisa da "Senha de leitura de mensagens" (6 dígitos, a mesma
+"Senha Acesso Remoto" do app oficial) configurada explicitamente.
+
+**Histórico**: uma tentativa anterior, sem essa senha de identificação,
+só recebia um ACK genérico da central, sem dados — e uma tentativa
+ainda mais antiga, com um endereço/comando diferente, chegou a travar a
+comunicação da central (recuperou sozinha, sem reset físico). A
+diferença que resolveu: o comando precisa de uma **autenticação prévia**
+(sub-comando `[5,17]` dentro do `0xE7`, com a senha de 6 dígitos), *e*
+essa senha precisa de uma codificação específica — cada dígito `'0'` é
+trocado pelo caractere `'A'` **antes** de dividir em pares e interpretar
+cada par como um byte em hexadecimal (achado que faltava nas tentativas
+anteriores).
+
+**Como funciona nesta integração**:
+- Comando de autenticação: `[5, 17, par1, par2, par3, 0x34, crc_hi, crc_lo]`
+  — sucesso confirmado pelo byte de status `0x50` na resposta (`0x53` =
+  senha incorreta).
+- Comando de leitura: `[4, 18, endereço_hi, endereço_lo, tamanho,
+  crc_hi, crc_lo]` — mesmo formato já usado no comando moderno, só que
+  sem passar pelo `0x5C`.
+- **CRC próprio deste protocolo** — não é nenhum CRC16 padrão
+  conhecido. Peculiaridade real, confirmada byte a byte no bytecode
+  decompilado: os 2 primeiros bytes de cada cálculo são carregados
+  direto num registrador de 24 bits (posições alta/média), **sem**
+  passar pelo laço de 8 deslocamentos — só a partir do 3º byte em
+  diante que o deslocamento de CRC de verdade acontece.
+- Endereços de leitura (nomes: `2048`–`4316`; eventos: `6144`–`8034`,
+  ambos em páginas de 189 bytes) são constantes literais encontradas no
+  código decompilado do app oficial (`SincronizarNomes`/
+  `BaixarEventos`) — confirmadas na AMT 1016 NET testada; ainda não
+  confirmadas independentemente para os demais modelos fora do limiar
+  do `0x5C` (assume-se o mesmo layout, por virem do mesmo trecho de
+  código do app, não específico de modelo).
+- **Conexão isolada e descartável**, própria para essa operação — nunca
+  a conexão persistente usada no polling normal, e só roda sob demanda
+  (botão de sincronizar zonas / serviço `read_events`), nunca durante o
+  ciclo de consulta regular. Evita misturar dois protocolos diferentes
+  numa mesma conexão, e evita manter uma sessão autenticada
+  desnecessariamente aberta.
+
+**Ainda em aberto**: os endereços acima só foram confirmados numa
+central real (1016 NET); os três códigos de evento vistos numa leitura
+real de teste (`141`, `142`, `14`) ainda não estão catalogados — ver
+`protocol.EVENT_CODE_TABLE`.
 
 ### Bug conhecido da central (não da integração): senha única em central particionada
 

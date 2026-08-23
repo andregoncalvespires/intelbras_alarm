@@ -13,7 +13,8 @@
           "enabled_zones": "Zones enabled by default",
           "receptor_ip_enabled": "Enable event receiving (Receptor IP)",
           "receptor_ip_port": "Receptor IP listening port",
-          "amt8000_mode": "AMT 8000 (experimental protocol)"
+          "amt8000_mode": "AMT 8000 (experimental protocol)",
+          "legacy_eeprom_password": "Message reading password (6 digits, optional)"
         },
         "data_description": {
           "code_required_arm": "Unchecked (default): arms with a single tap, no typing. Checked: asks for the password before arming.",
@@ -21,7 +22,8 @@
           "enabled_zones": "Format: ranges and/or numbers separated by ; (e.g. 1-5;8;10-15). Zones outside this list still exist, just disabled until you enable them manually under Settings → Entities.",
           "receptor_ip_enabled": "Unchecked (default): off, no port is opened. Checked: the panel can connect here and push events in real time — you'll need to configure the panel separately (outside this screen) to point at Home Assistant's IP and the port below. See the README for the full walkthrough.",
           "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect (not to be confused with the panel's own port, above) — must match what's configured on the panel. Only matters if the option above is checked.",
-          "amt8000_mode": "Only check this if your panel is an AMT 8000 — it uses a separate protocol still under development and testing (see README_DETALHADO.md, \"AMT 8000 (experimental)\" section). Leave unchecked for the other models (2018/1016/4010), which keep automatic detection."
+          "amt8000_mode": "Only check this if your panel is an AMT 8000 — it uses a separate protocol still under development and testing (see README_DETALHADO.md, \"AMT 8000 (experimental)\" section). Leave unchecked for the other models (2018/1016/4010), which keep automatic detection.",
+          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware) -- it's the same 6-digit password (\"Senha Acesso Remoto\") requested by the AMT Mobile app to sync zone/user names. If your model already has normal access to this feature, this field has no effect. Does not apply to AMT 8000."
         }
       },
       "partition_passwords": {
@@ -39,7 +41,8 @@
       "cannot_connect": "Could not connect to the panel. Check the IP, port and password.",
       "invalid_password": "Password must be 4 to 6 numeric digits.",
       "invalid_zone_spec": "Invalid format. Use ranges and/or numbers separated by ; (e.g. 1-5;8;10-15).",
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "invalid_legacy_eeprom_password": "Invalid password — leave blank or enter exactly 6 numeric digits"
     },
     "abort": {
       "already_configured": "This panel is already configured."
@@ -56,14 +59,16 @@
           "code_required_disarm": "Ask for the password to DISARM via Home Assistant",
           "polling_interval": "Status polling interval (seconds)",
           "receptor_ip_enabled": "Enable event receiving (Receptor IP)",
-          "receptor_ip_port": "Receptor IP listening port"
+          "receptor_ip_port": "Receptor IP listening port",
+          "legacy_eeprom_password": "Message reading password (6 digits, optional)"
         },
         "data_description": {
           "password": "The new password is validated against the panel itself before being saved.",
           "code_required_arm": "Unchecked: arms with a single tap, no typing. Checked: asks for the password before arming.",
           "code_required_disarm": "Unchecked: disarms with a single tap, no typing. Checked: asks for the password before disarming.",
           "receptor_ip_enabled": "Unchecked (default): off, no port is opened. Checked: the panel can connect here and push events in real time — you'll need to configure the panel separately (outside this screen) to point at Home Assistant's IP and the port below. See the README for the full walkthrough.",
-          "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect — must match what's configured on the panel. Only matters if the option above is checked."
+          "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect — must match what's configured on the panel. Only matters if the option above is checked.",
+          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware) -- it's the same 6-digit password (\"Senha Acesso Remoto\") requested by the AMT Mobile app to sync zone/user names. If your model already has normal access to this feature, this field has no effect. Does not apply to AMT 8000."
         }
       },
       "partition_passwords": {
@@ -81,7 +86,8 @@
       "cannot_connect": "Could not validate the new password against the panel. Check that it's reachable (and that the \"Connection\" switch is on).",
       "invalid_password": "Password must be 4 to 6 numeric digits.",
       "password_rejected": "The panel rejected that password (\"incorrect password\") — double-check it.",
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "invalid_legacy_eeprom_password": "Invalid password — leave blank or enter exactly 6 numeric digits"
     }
   }
 }

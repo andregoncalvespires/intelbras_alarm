@@ -8,6 +8,29 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.7] — EXPERIMENTAL, branch `dev`
+
+### Adicionado
+- **Nomes de zona/usuário e log de eventos para modelos/firmwares fora
+  do limiar do `0x5C`** (ex.: AMT 1016 NET com firmware antigo; não se
+  aplica à AMT 8000, que já tem acesso incondicional ao caminho
+  moderno). Mesma funcionalidade publicada em `main`/v2.0.2-beta.2 —
+  novo caminho alternativo via protocolo legado (`0xE7` +
+  identificação por senha de 6 dígitos), confirmado funcionando de
+  ponta a ponta em hardware real.
+  - Novo módulo `protocol_legacy_eeprom.py`: framing, CRC próprio deste
+    protocolo, autenticação (senha com dígito `'0'` trocado por `'A'`
+    antes de codificar), leitura paginada, parsing de nomes e eventos.
+    Validado byte a byte contra uma leitura real completa fornecida
+    pelo usuário.
+  - Novo campo de configuração **opcional**, em branco por padrão:
+    "Senha de leitura de mensagens (6 dígitos)".
+  - Usa uma conexão TCP **isolada e descartável** — nunca a conexão
+    persistente do polling normal, e só roda sob demanda.
+  - Integrado tanto no fluxo de configuração inicial quanto no de
+    seleção manual da AMT 8000 (`CONF_AMT8000_MODE`) — a validação
+    roda antes desse branch, cobrindo os dois casos automaticamente.
+
 ## [2.1.0-dev.6] — EXPERIMENTAL, branch `dev`
 
 Ajustes a partir da comparação com o projeto de terceiros

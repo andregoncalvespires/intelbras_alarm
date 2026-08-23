@@ -14,6 +14,7 @@ from .const import (
     CONF_CODE_REQUIRED_ARM,
     CONF_CODE_REQUIRED_DISARM,
     CONF_ENABLED_ZONES,
+    CONF_LEGACY_EEPROM_PASSWORD,
     CONF_MODEL,
     CONF_PARTITION_PASSWORDS,
     CONF_PASSWORD,
@@ -58,6 +59,7 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Optional(CONF_ENABLED_ZONES, default=DEFAULT_ENABLED_ZONES_SPEC): str,
         vol.Optional(CONF_RECEPTOR_IP_ENABLED, default=DEFAULT_RECEPTOR_IP_ENABLED): bool,
         vol.Optional(CONF_RECEPTOR_IP_PORT, default=DEFAULT_RECEPTOR_IP_PORT): vol.Coerce(int),
+        vol.Optional(CONF_LEGACY_EEPROM_PASSWORD, default=""): str,
     }
 )
 
@@ -71,10 +73,21 @@ STEP_PARTITION_PASSWORDS_SCHEMA = vol.Schema(
 )
 
 
+def _validate_legacy_eeprom_password(value: str) -> None:
+    """Vazio (desligado) ou exatamente 6 dígitos numéricos — formato
+    exigido pelo comando de identificação do protocolo legado (ver
+    protocol_legacy_eeprom.montar_comando_autenticar).
+    """
+    if value and (len(value) != 6 or not value.isdigit()):
+        raise InvalidLegacyEepromPassword
+
+
 async def _validate_and_detect(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
     password = data[CONF_PASSWORD]
     if not (4 <= len(password) <= 6) or not password.isdigit():
         raise InvalidPassword
+
+    _validate_legacy_eeprom_password(data.get(CONF_LEGACY_EEPROM_PASSWORD, ""))
 
     # Só valida o FORMATO aqui (o modelo, e portanto o nº máximo de zonas,
     # ainda não foi detectado neste ponto do fluxo) — o intervalo de
@@ -125,6 +138,8 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 detected = await _validate_and_detect(self.hass, user_input)
             except InvalidPassword:
                 errors["base"] = "invalid_password"
+            except InvalidLegacyEepromPassword:
+                errors[CONF_LEGACY_EEPROM_PASSWORD] = "invalid_legacy_eeprom_password"
             except InvalidZoneSpec:
                 errors[CONF_ENABLED_ZONES] = "invalid_zone_spec"
             except PanelConnectionError:
@@ -149,6 +164,7 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_ENABLED_ZONES: user_input[CONF_ENABLED_ZONES],
                     CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
                     CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
+                    CONF_LEGACY_EEPROM_PASSWORD: user_input[CONF_LEGACY_EEPROM_PASSWORD],
                 }
                 if detected["family"] == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -236,6 +252,11 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
             if not (4 <= len(password) <= 6) or not password.isdigit():
                 errors["base"] = "invalid_password"
 
+            try:
+                _validate_legacy_eeprom_password(user_input[CONF_LEGACY_EEPROM_PASSWORD])
+            except InvalidLegacyEepromPassword:
+                errors[CONF_LEGACY_EEPROM_PASSWORD] = "invalid_legacy_eeprom_password"
+
             if not errors:
                 # Confere a nova senha contra a central de verdade antes de
                 # salvar — evita gravar uma senha errada e só descobrir no
@@ -271,6 +292,7 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     OPT_POLLING_INTERVAL: user_input[OPT_POLLING_INTERVAL],
                     CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
                     CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
+                    CONF_LEGACY_EEPROM_PASSWORD: user_input[CONF_LEGACY_EEPROM_PASSWORD],
                 }
                 if self.config_entry.data.get("family") == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -318,6 +340,10 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_RECEPTOR_IP_PORT,
                     default=data.get(CONF_RECEPTOR_IP_PORT, DEFAULT_RECEPTOR_IP_PORT),
                 ): vol.Coerce(int),
+                vol.Optional(
+                    CONF_LEGACY_EEPROM_PASSWORD,
+                    default=data.get(CONF_LEGACY_EEPROM_PASSWORD, ""),
+                ): str,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
@@ -366,6 +392,7 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
         new_data[CONF_CODE_REQUIRED_DISARM] = self._pending_data[CONF_CODE_REQUIRED_DISARM]
         new_data[CONF_RECEPTOR_IP_ENABLED] = self._pending_data[CONF_RECEPTOR_IP_ENABLED]
         new_data[CONF_RECEPTOR_IP_PORT] = self._pending_data[CONF_RECEPTOR_IP_PORT]
+        new_data[CONF_LEGACY_EEPROM_PASSWORD] = self._pending_data[CONF_LEGACY_EEPROM_PASSWORD]
         if CONF_PARTITION_PASSWORDS in self._pending_data:
             new_data[CONF_PARTITION_PASSWORDS] = self._pending_data[CONF_PARTITION_PASSWORDS]
         self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)
@@ -376,3 +403,7 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
 
 class InvalidPassword(Exception):
     """Senha fora do padrão aceito pela central (4 a 6 dígitos)."""
+
+
+class InvalidLegacyEepromPassword(Exception):
+    """Senha de leitura de mensagens fora do padrão (vazia ou 6 dígitos)."""
