@@ -27,6 +27,16 @@ relatados em testes da leitura legada de EEPROM (dev.7).
   (`__init__.py`) e disponibilidade da entidade "Últimos eventos"
   (`sensor.py`).
 
+### Adicionado
+- 4 novos códigos de evento confirmados em `protocol.EVENT_CODE_TABLE`
+  (mesma adição publicada em `main`/v2.0.2-beta.3): `141`→`1301`
+  ("Falha na rede elétrica"), `142`→`1302` ("Bateria principal baixa ou
+  em curto-circuito"), `14`→`3302` ("Restauração bat. princ. baixa ou
+  em curto-circuito"), `15`→`1303` ("Bateria principal pendente" — este
+  último sem correspondência confirmada contra a tela oficial do app,
+  número extrapolado por nós). Tabela agora com 26 códigos confirmados
+  (era 22).
+
 ## [2.1.0-dev.7] — EXPERIMENTAL, branch `dev`
 
 ### Adicionado
