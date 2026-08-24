@@ -936,12 +936,24 @@ palpite. Ver `protocol.EVENT_CODE_TABLE`.
 | `158` | 1354 | Falha ao comunicar evento |
 | `165` | 1621 | Reset do buffer de eventos |
 | `175` | 1361 | Falha keep alive ethernet |
+| `141` | 1301 | Falha na rede elétrica |
+| `142` | 1302 | Bateria principal baixa ou em curto-circuito |
+| `14` | 3302 | Restauração bat. princ. baixa ou em curto-circuito |
+| `15` | 1303 (⚠️ não confirmado contra a tela oficial do app) | Bateria principal pendente |
 
-> Os 5 últimos da tabela foram confirmados posteriormente, num trabalho
-> paralelo de captura própria — mesma metodologia dos 17 originais.
-> Nessa rodada, também corrigimos uma atribuição: o byte `45` na
-> verdade corresponde ao código `3531` ("Dispositivo Encontrado"), não
+> Os 5 marcados como "trabalho paralelo" foram confirmados posteriormente,
+> num trabalho paralelo de captura própria — mesma metodologia dos 17
+> originais. Nessa rodada, também corrigimos uma atribuição: o byte `45`
+> na verdade corresponde ao código `3531` ("Dispositivo Encontrado"), não
 > `3333` como estava antes — o `3333` correto é o byte `9`.
+>
+> Os 4 últimos (`141`, `142`, `14`, `15`) vieram de uma leitura real do
+> log de eventos completo (256 registros) de uma AMT 1016 NET, firmware
+> 3.1, confirmados pelo usuário comparando com o que o app mostra pra
+> cada um. Três batem exatamente com descrições já catalogadas; o byte
+> `15` não corresponde a nenhum código de 4 dígitos já confirmado — o
+> número `1303` é uma extrapolação nossa (mesmo padrão dos outros "13xx"
+> de bateria), possivelmente uma particularidade de firmwares antigos.
 
 ---
 

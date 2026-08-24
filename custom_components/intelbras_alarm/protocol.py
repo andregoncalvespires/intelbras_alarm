@@ -735,6 +735,20 @@ EVENT_CODE_TABLE: dict[int, tuple[str, str]] = {
     158: ("1354", "Falha ao comunicar evento"),
     165: ("1621", "Reset do buffer de eventos"),
     175: ("1361", "Falha keep alive ethernet"),
+    # Os 4 abaixo foram confirmados diretamente pelo usuário, lendo o
+    # log de eventos de uma central real (AMT 1016 NET, firmware 3.1) e
+    # comparando com o que o próprio app mostra pra cada um. 3 batem
+    # exatamente com descrições que já tínhamos catalogado (só
+    # atribuindo o byte bruto que faltava); o quarto (byte 15) não
+    # corresponde a nenhum código de 4 dígitos já confirmado — o número
+    # "1303" aqui é uma extrapolação nossa (mesmo padrão de agrupamento
+    # dos outros "13xx" de bateria), não confirmada contra a tela
+    # oficial do app — possível particularidade de firmwares antigos,
+    # como o usuário observou.
+    141: ("1301", "Falha na rede elétrica"),
+    142: ("1302", "Bateria principal baixa ou em curto-circuito"),
+    14: ("3302", "Restauração bat. princ. baixa ou em curto-circuito"),
+    15: ("1303", "Bateria principal pendente"),
 }
 
 _EVENT_PARTITION_LETTERS = {0: "-", 1: "A", 2: "B", 3: "C", 4: "D"}

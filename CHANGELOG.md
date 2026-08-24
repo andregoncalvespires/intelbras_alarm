@@ -33,6 +33,18 @@ funcionalidade nova de leitura legada de EEPROM.
   (`sensor.py`), que ficaria sempre indisponível mesmo depois de uma
   leitura de eventos bem-sucedida.
 
+### Adicionado
+- 4 novos códigos de evento confirmados em `protocol.EVENT_CODE_TABLE`,
+  a partir de uma leitura real do log de eventos completo (256
+  registros) via o protocolo legado, comparados pelo usuário com o que
+  o app mostra: `141`→`1301` ("Falha na rede elétrica"), `142`→`1302`
+  ("Bateria principal baixa ou em curto-circuito"), `14`→`3302`
+  ("Restauração bat. princ. baixa ou em curto-circuito"). Um quarto
+  (`15`→`1303`, "Bateria principal pendente") não corresponde a nenhum
+  código de 4 dígitos já confirmado contra a tela oficial do app —
+  número extrapolado por nós, possível particularidade de firmware
+  antigo. Tabela agora com 26 códigos confirmados (era 22).
+
 ## [2.0.2-beta.2] — pré-lançamento, não visível por padrão no HACS
 
 ### Adicionado
