@@ -128,7 +128,7 @@ DEFAULT_REQUEST_TIMEOUT = 3  # segundos
 # soluço passageiro da central (ex.: o bug do firmware 6.2 documentado no
 # README). Só depois que o silêncio ultrapassa este limite é que a falha
 # vira uma indisponibilidade de verdade.
-DEFAULT_CONNECTION_HEALTH_TIMEOUT = 8  # segundos
+DEFAULT_CONNECTION_HEALTH_TIMEOUT = 10  # segundos
 DEFAULT_CODE_REQUIRED_ARM = False
 DEFAULT_CODE_REQUIRED_DISARM = False
 # Formato: intervalos e/ou números individuais separados por ponto e
@@ -146,8 +146,16 @@ CMD_SIREN_ON = 0x43  # Liga sirene
 CMD_DISARM = 0x44  # Desativação da central
 CMD_PANIC = 0x45  # Pânico
 CMD_PGM = 0x50  # Controle de PGM
-CMD_STATUS_PARTIAL = 0x5A  # Solicitação parcial de status (AMT 2018 / 1016 / SMART)
+CMD_STATUS_PARTIAL = 0x5A  # Solicitação parcial de status (AMT 2018 / 1016)
 CMD_STATUS_FULL = 0x5B  # Solicitação completa de status (AMT 4010)
+CMD_STATUS_ESMART = 0x5D  # Solicitação de status da AMT 2018 E SMART/AMT 1000
+# Smart -- resposta bem mais longa (135+ bytes, contra 43 do 0x5A), mas
+# confirmado por engenharia reversa (Amt2018ESmart.updateStatusAttributes)
+# que os campos que esta integração usa (firmware, partição
+# ativada/particionada, sirene, falta de rede) ficam EXATAMENTE nos
+# mesmos offsets que a família 2018 padrão -- o conteúdo extra é só
+# informação adicional (Stay por partição, status de rede geral) que
+# não lemos. Ver MODEL_STATUS_CMD_OVERRIDE e CHANGELOG.md.
 CMD_EEPROM_READ = 0x5C  # Leitura de n bytes da EEPROM
 CMD_SIREN_OFF = 0x63  # Desliga sirene
 
@@ -193,18 +201,30 @@ NACK_MESSAGES = {
 #
 # O byte de modelo é lido do status da central (Status19 no comando 0x5A,
 # Status25 no comando 0x5B). Os valores 0x1E e 0x41 são os únicos descritos
-# na documentação oficial ISECNet R15; os demais (0x61, 0x24, 0x34) foram
-# confirmados em campo (fluxo Node-RED original) e são mantidos por
-# compatibilidade, claramente identificados como extensão não documentada.
+# na documentação oficial ISECNet R15; 0x61 e 0x24 foram confirmados em
+# campo (fluxo Node-RED original). Os demais bytes (0x04, 0x08, 0x10, 0x18,
+# 0x20, 0x25, 0x2E, 0x30, 0x32) vêm de engenharia reversa direta do app
+# oficial (`PanelModelId`, classe `Amt2018`) — nunca testados contra
+# hardware real, mas com alta confiança: são literalmente a mesma classe
+# Java já usada (e validada) para 0x1E/0x61/0x24, sem nenhuma ramificação
+# de comportamento por modelo específico dentro dela.
 # ---------------------------------------------------------------------------
 FAMILY_2018 = "2018"  # usa comando 0x5A, status de 43 bytes, até 48 zonas
 FAMILY_4010 = "4010"  # usa comando 0x5B, status de até 54 bytes, até 64 zonas
 
 MODEL_2018_EG = "amt_2018_eg"
 MODEL_1016_NET = "amt_1016_net"
-MODEL_AMN24_NET = "amn_24_net"
-MODEL_2018_SMART = "amt_2018_smart"
+MODEL_ANM24_NET = "anm_24_net"
 MODEL_4010_SMART = "amt_4010_smart"
+MODEL_2018_SMART = "amt_2018_smart"
+MODEL_2008_RF = "amt_2008_rf"
+MODEL_2010 = "amt_2010"
+MODEL_2018_BASE = "amt_2018"
+MODEL_2110 = "amt_2110"
+MODEL_2118_EG = "amt_2118_eg"
+MODEL_3010 = "amt_3010"
+MODEL_2018_E3G = "amt_2018_e3g"
+MODEL_GPRS_1000_UN = "gprs_1000_un"
 MODEL_UNKNOWN = "unknown"
 
 # model_byte -> (chave do modelo, nome amigável, família, nº de zonas
@@ -214,12 +234,64 @@ MODEL_UNKNOWN = "unknown"
 # estimativa por modelo específico. Só as primeiras 16 nascem habilitadas
 # por padrão no Home Assistant (ver ZONE_ENABLED_BY_DEFAULT_COUNT); as
 # demais são criadas desabilitadas, para o usuário ativar as que usar.
+#
+# "AMT 2018 E SMART" (byte 0x34): reavaliada e reincluída. Uma versão
+# anterior deste comentário dizia que esse modelo tinha sido removido por
+# usar um comando de status próprio (0x5D) com layout "completamente
+# diferente" — engano nosso: o comando É diferente (0x5D, não 0x5A), e a
+# resposta É bem mais longa (135+ bytes contra 43), mas uma verificação
+# byte a byte de `Amt2018ESmart.updateStatusAttributes()`/
+# `updateBatteryStatus()`/`updateProblems()` (decompilados do app oficial)
+# confirmou que TODOS os campos que esta integração usa (firmware,
+# partição ativada/particionada, sirene, falta de rede, tamper) ficam
+# EXATAMENTE nos mesmos offsets de byte que a família 2018 padrão — o
+# conteúdo extra é só informação adicional (Stay por partição, status de
+# rede geral) que não lemos. Por isso: mesmo `parse_status_2018()`, mesmo
+# limite de 48 zonas — só o comando enviado muda (ver
+# MODEL_STATUS_CMD_OVERRIDE) e a validação de tamanho de resposta passa a
+# aceitar qualquer tamanho >= 43 para este modelo específico (ver
+# MODEL_STATUS_MIN_LEN_OVERRIDE), em vez de uma comparação exata. Ainda
+# não testado contra hardware real. Ver CHANGELOG.md.
+#
+# Os 8 bytes abaixo (2008 RF, 2010, 2018 base, 2110, 2118 EG, 3010, E3G,
+# GPRS 1000 UN) foram adicionados a partir da mesma engenharia reversa:
+# confirmado que a classe `Amt2018` do app oficial trata todos eles de
+# forma IDÊNTICA, sem nenhuma ramificação por modelo específico (mesmo
+# comando 0x5A, mesmas 48 zonas, mesmos offsets de byte, hardcoded) — o
+# mesmo código-fonte já usado para AMT 2018 E/EG e AMT 1016 NET. Nenhum
+# desses 8 foi testado contra hardware real; a confiança vem de serem
+# literalmente a mesma classe Java, não de inferência por semelhança.
 MODEL_TABLE: dict[int, tuple[str, str, str, int, int]] = {
     0x1E: (MODEL_2018_EG, "AMT 2018 E/EG", FAMILY_2018, 48, 2),
     0x61: (MODEL_1016_NET, "AMT 1016 NET", FAMILY_2018, 48, 2),
-    0x24: (MODEL_AMN24_NET, "AMN 24 NET", FAMILY_2018, 48, 2),
+    0x24: (MODEL_ANM24_NET, "ANM 24 Net", FAMILY_2018, 48, 2),
+    0x25: (MODEL_ANM24_NET, "ANM 24 Net", FAMILY_2018, 48, 2),  # variante G2, mesma classe/nome no app oficial
     0x34: (MODEL_2018_SMART, "AMT 2018 E SMART", FAMILY_2018, 48, 2),
     0x41: (MODEL_4010_SMART, "AMT 4010 SMART", FAMILY_4010, 64, 4),
+    0x04: (MODEL_GPRS_1000_UN, "GPRS 1000 UN", FAMILY_2018, 48, 2),
+    0x08: (MODEL_2008_RF, "AMT 2008 RF", FAMILY_2018, 48, 2),
+    0x10: (MODEL_2010, "AMT 2010", FAMILY_2018, 48, 2),
+    0x18: (MODEL_2018_BASE, "AMT 2018", FAMILY_2018, 48, 2),
+    0x20: (MODEL_2110, "AMT 2110", FAMILY_2018, 48, 2),
+    0x2E: (MODEL_2118_EG, "AMT 2118 EG", FAMILY_2018, 48, 2),
+    0x30: (MODEL_3010, "AMT 3010", FAMILY_2018, 48, 2),
+    0x32: (MODEL_2018_E3G, "AMT 2018 E3G", FAMILY_2018, 48, 2),
+}
+
+# Modelos cujo comando de status difere do padrão da família (ver
+# CMD_STATUS_ESMART acima) — checado ANTES de FAMILY_STATUS_CMD.
+MODEL_STATUS_CMD_OVERRIDE: dict[str, int] = {
+    MODEL_2018_SMART: CMD_STATUS_ESMART,
+}
+
+# Modelos cuja resposta de status tem tamanho VARIÁVEL/maior que o padrão
+# da família — checado ANTES de FAMILY_STATUS_LEN. Valor = tamanho MÍNIMO
+# aceito (não exato): resposta com pelo menos esse tanto de bytes é
+# considerada válida, mesmo que venha maior. Só a AMT 2018 E SMART tem
+# essa particularidade hoje (43 = mesmo limite da família 2018 padrão,
+# suficiente para cobrir tudo que este comando lê).
+MODEL_STATUS_MIN_LEN_OVERRIDE: dict[str, int] = {
+    MODEL_2018_SMART: 43,
 }
 
 # chave do modelo -> nº de zonas a criar como entidade (deriva de
@@ -271,10 +343,12 @@ def parse_zone_spec(spec: str, max_zone: int = 64) -> set[int]:
     return zones
 
 # Modelos cujo comando de ativação em modo Stay (0x50) é suportado de
-# verdade pela central — confirmado pelo usuário: só a família 4010 e a
-# variante "SMART" da 2018 respondem corretamente a esse comando; nas
-# demais (2018 E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo
-# mas a central não implementa esse modo de fato.
+# verdade pela central — confirmado pelo usuário: a família 4010 e a
+# "AMT 2018 E SMART" respondem corretamente a esse comando; nas demais
+# (2018 E/EG, 1016 NET, ANM 24 Net e os demais bytes genéricos da
+# família 2018) o comando existe no protocolo mas a central não
+# implementa esse modo de fato. AMT 8000 (protocolo próprio) também
+# suporta Stay, ver protocol_amt8000.py.
 MODELS_SUPPORTING_STAY = {MODEL_4010_SMART, MODEL_2018_SMART, MODEL_AMT_8000}
 
 # Nº máximo de zonas cobertas pelos bytes de status de cada família (limite
@@ -322,18 +396,19 @@ EVENT_ENTITY_RECENT_COUNT = 24
 # Modelo -> (limiar mínimo de firmware (major, minor), ou None = qualquer
 # firmware) para ter acesso ao comando 0x5C nesse contexto (nomes de
 # zona/painel/usuário e leitura de eventos). Extraído literalmente da tela
-# de ajuda "Senha Acesso Remoto" do app oficial AMT Mobile — centrais fora
-# desta lista (ex.: AMT 1016 NET com qualquer firmware, mesmo que suportada
-# pelo resto desta integração) usam um protocolo legado diferente (0xE7,
-# não implementado aqui por ser mais arriscado — ver README, seção de
-# limitações conhecidas) e por isso não têm nomes de zona nem eventos
-# disponíveis nesta integração.
+# de ajuda "Senha Acesso Remoto" do app oficial AMT Mobile, e confirmado
+# byte a byte decompilando `Painel.isPanelUsing5c()` — centrais fora
+# desta lista (ex.: AMT 1016 NET com firmware abaixo do limiar) usam um
+# protocolo legado diferente (0xE7 + senha de leitura de mensagens,
+# opcional — ver `protocol_legacy_eeprom.py` e
+# `coordinator.supports_legacy_eeprom`) para ter acesso a essas mesmas
+# duas funções.
 EEPROM_EXTENDED_MIN_FIRMWARE: dict[str, tuple[int, int] | None] = {
     MODEL_2018_EG: (7, 7),
     MODEL_4010_SMART: (3, 2),
     MODEL_1016_NET: (4, 1),
     MODEL_2018_SMART: None,
-    MODEL_AMN24_NET: None,
+    MODEL_ANM24_NET: None,
 }
 
 # ---------------------------------------------------------------------------

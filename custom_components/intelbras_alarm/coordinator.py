@@ -40,6 +40,8 @@ from .const import (
     FAMILY_MAX_ZONES,
     FAMILY_STATUS_CMD,
     FAMILY_STATUS_LEN,
+    MODEL_STATUS_CMD_OVERRIDE,
+    MODEL_STATUS_MIN_LEN_OVERRIDE,
     InvalidZoneSpec,
     MODEL_AMT_8000,
     MODEL_TABLE,
@@ -347,11 +349,13 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     def supports_stay(self) -> bool:
         """Se este modelo suporta de verdade o comando de ativação em modo Stay.
 
-        Confirmado pelo usuário: só a 4010 e a 2018 E SMART respondem
+        Confirmado pelo usuário: a 4010 e a AMT 2018 E SMART respondem
         corretamente ao comando 0x50 — nos demais modelos da família 2018
-        (E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo mas a
-        central não implementa esse modo. Usado para remover a opção
-        `armed_home` da UI nesses modelos (ver alarm_control_panel.py).
+        (E/EG, 1016 NET, ANM 24 Net e os demais bytes da tabela) o comando
+        existe no protocolo mas a central não implementa esse modo. AMT
+        8000 (protocolo próprio) também suporta Stay de verdade. Usado
+        para remover a opção `armed_home` da UI nesses modelos (ver
+        alarm_control_panel.py).
         """
         from .const import MODELS_SUPPORTING_STAY
 
@@ -383,7 +387,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if self.family == FAMILY_8000:
             await self._async_validate_password_amt8000(password)
             return
-        frame = _build_status_frame(password, self.family)
+        frame = _build_status_frame(password, self.family, self.model_key)
         response = await self.client.send_command(frame, context="validar nova senha")
         # Uma resposta de status completa (43 ou 54 bytes, conforme a
         # família) já confirma que a senha foi aceita. Não usamos
@@ -467,7 +471,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
         try:
             response = await self.client.send_command(
-                _build_status_frame(self._password, self.family), context="consulta de status"
+                _build_status_frame(self._password, self.family, self.model_key), context="consulta de status"
             )
             if not response.valid_checksum:
                 raise UpdateFailed("Checksum inválido na resposta de status")
@@ -481,19 +485,35 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # aparecendo como fechada), podendo disparar automações por
             # engano. Em vez disso, tratamos como falha de leitura, igual a
             # uma queda de conexão: cai no mesmo mecanismo de tolerância de
-            # _handle_poll_failure() (silencioso se isolado, dentro dos 8s
+            # _handle_poll_failure() (silencioso se isolado, dentro dos 10s
             # de tolerância; escala pra indisponível de verdade só se
             # persistir) — nenhuma entidade muda de valor por causa de uma
             # leitura isolada incompleta.
-            expected_len = FAMILY_STATUS_LEN.get(self.family)
-            if expected_len is not None and len(response.content) != expected_len:
-                raise UpdateFailed(
-                    f"Resposta de status com tamanho inesperado para {self.family}: "
-                    f"recebidos {len(response.content)} bytes, esperados {expected_len} "
-                    f"— a central pode ter um firmware com comportamento incorreto "
-                    f"(ver README, seção de modelos testados). Conteúdo recebido: "
-                    f"{response.content.hex(' ').upper()}"
-                )
+            #
+            # Modelos em MODEL_STATUS_MIN_LEN_OVERRIDE (hoje só AMT 2018 E
+            # SMART) fogem dessa regra de propósito: a resposta deles varia
+            # de tamanho (135+ bytes, com conteúdo extra que não lemos — ver
+            # comentário em const.MODEL_TABLE) — por isso a checagem vira
+            # "pelo menos N bytes", não "exatamente N bytes".
+            min_len_override = MODEL_STATUS_MIN_LEN_OVERRIDE.get(self.model_key)
+            if min_len_override is not None:
+                if len(response.content) < min_len_override:
+                    raise UpdateFailed(
+                        f"Resposta de status muito curta para {self.model_key}: "
+                        f"recebidos {len(response.content)} bytes, esperados pelo menos "
+                        f"{min_len_override}. Conteúdo recebido: "
+                        f"{response.content.hex(' ').upper()}"
+                    )
+            else:
+                expected_len = FAMILY_STATUS_LEN.get(self.family)
+                if expected_len is not None and len(response.content) != expected_len:
+                    raise UpdateFailed(
+                        f"Resposta de status com tamanho inesperado para {self.family}: "
+                        f"recebidos {len(response.content)} bytes, esperados {expected_len} "
+                        f"— a central pode ter um firmware com comportamento incorreto "
+                        f"(ver README, seção de modelos testados). Conteúdo recebido: "
+                        f"{response.content.hex(' ').upper()}"
+                    )
 
             status = parse_status(response.content, self.family)
         except (PanelConnectionError, UpdateFailed, IndexError, ValueError) as err:
@@ -633,7 +653,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         feedback rápido, não silêncio tolerado.
 
         Tolerância: se o tempo desde a última consulta bem-sucedida ainda
-        está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (8s por
+        está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (10s por
         padrão), a falha vira só um aviso no log — as entidades continuam
         "disponíveis", mostrando o último dado bom conhecido, e a próxima
         tentativa (0,25s depois, por padrão) tenta de novo normalmente.
@@ -1408,10 +1428,11 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.async_update_listeners()
 
 
-def _build_status_frame(password: str, family: str) -> bytes:
+def _build_status_frame(password: str, family: str, model_key: str | None = None) -> bytes:
     from .protocol import build_command
 
-    return build_command(password, FAMILY_STATUS_CMD[family])
+    comando = MODEL_STATUS_CMD_OVERRIDE.get(model_key, FAMILY_STATUS_CMD[family])
+    return build_command(password, comando)
 
 
 def _partition_code(partition: str) -> int:
@@ -1451,10 +1472,20 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
     Estratégia: envia primeiro o comando 0x5A (famílias 2018/1016/SMART).
     Se a central responder com NACK "comando descontinuado" (0xE5) — como
     documentado na seção 7.4 —, trata-se de uma AMT 4010 e o comando 0x5B é
-    usado em seguida.
+    usado em seguida. Se o byte de modelo não for reconhecido em nenhuma
+    das duas famílias, uma terceira tentativa usa 0x5D (AMT 2018 E SMART/
+    AMT 1000 Smart — ver CMD_STATUS_ESMART) antes de desistir.
+
+    Ainda não sabemos com certeza como uma AMT 2018 E SMART real reage ao
+    receber 0x5A "por engano" (NACK explícito, silêncio, ou uma resposta
+    ainda assim válida) — por isso a tentativa de 0x5D só acontece depois
+    que 0x5A e 0x5B já deram uma resposta PARSEÁVEL, mas com modelo
+    desconhecido; se 0x5A falhar de forma mais dura (erro de conexão), a
+    detecção ainda não chega a tentar 0x5D. Não testado contra hardware
+    real.
     """
     from .protocol import build_command, parse_status_2018, parse_status_4010
-    from .const import CMD_STATUS_FULL, CMD_STATUS_PARTIAL
+    from .const import CMD_STATUS_ESMART, CMD_STATUS_FULL, CMD_STATUS_PARTIAL
 
     client = PanelClient(host, port, timeout=DEFAULT_REQUEST_TIMEOUT)
     try:
@@ -1482,6 +1513,16 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
             status2 = parse_status_4010(response2.content)
             if status2.model_key != MODEL_UNKNOWN:
                 return status2.model_key, status2.model_name, FAMILY_4010
+            # Terceira hipótese: AMT 2018 E SMART/AMT 1000 Smart (0x5D) —
+            # mesmo parse_status_2018(), já que os offsets que usamos são
+            # confirmadamente idênticos aos da família 2018 padrão (ver
+            # comentário em const.MODEL_TABLE).
+            response3 = await client.send_command(
+                build_command(password, CMD_STATUS_ESMART), context="detecção de modelo (terceira tentativa, 0x5D)"
+            )
+            status3 = parse_status_2018(response3.content)
+            if status3.model_key != MODEL_UNKNOWN:
+                return status3.model_key, status3.model_name, FAMILY_2018
         return status.model_key, status.model_name, FAMILY_2018
     finally:
         await client.disconnect()

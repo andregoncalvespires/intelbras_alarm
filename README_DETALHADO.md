@@ -21,7 +21,8 @@
 >   aceitando estes termos.**
 
 Integração nativa (custom component / HACS) para centrais de alarme Intelbras
-**AMT 1016 NET, AMT 2018 E/EG, AMT 2018 E SMART, AMN 24 NET e AMT 4010 SMART**,
+**AMT 1016 NET, AMT 2018 E/EG, ANM 24 Net, AMT 4010 SMART** e outros
+modelos da mesma família (ver lista completa mais abaixo),
 via protocolo **ISECNet/ISECMobile** (o mesmo usado pelo app AMT Mobile) —
 conexão TCP persistente direta com a central, dentro do próprio ciclo de
 vida do Home Assistant.
@@ -51,15 +52,139 @@ de alarme por fora.
 | AMT 4010 SMART | 5.2 | — |
 | AMT 4010 SMART | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. Uma resposta assim **não é mais aceita como status válido** — é tratada como falha de leitura isolada (mesmo mecanismo de tolerância usado para quedas de conexão, ver seção "Tolerância a falhas passageiras"), então nenhuma entidade chega a mostrar um valor incorreto por causa disso; o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo. |
 
-Os demais modelos suportados pelo protocolo (AMT 2018 E SMART, AMN 24
-NET) seguem a mesma estrutura, mas ainda não foram validados em hardware
-real — o suporte a eles não é bloqueado por isso, é só para ter uma
-referência caso algum problema seja relatado. Esta tabela vai sendo
-atualizada conforme outros usuários testarem e relatarem outros
-modelos/firmwares.
+Os demais modelos suportados pelo protocolo (ANM 24 Net, AMT 2018 E
+Smart, AMT 2008 RF, AMT 2010, AMT 2018 base, AMT 2110, AMT 2118 EG, AMT
+3010, AMT 2018 E3G, GPRS 1000 UN) seguem a mesma estrutura, mas ainda não
+foram validados em hardware real — o suporte a eles não é bloqueado por
+isso, é só para ter uma referência caso algum problema seja relatado.
+Esta tabela vai sendo atualizada conforme outros usuários testarem e
+relatarem outros modelos/firmwares.
+
+> ⚠️ **AMT 2018 E Smart** tem uma ressalva técnica própria — ver seção
+> "Modelos suportados e engenharia reversa por modelo" mais abaixo.
 
 ![Tela de configuração da integração](docs/images/tela-configuracao-1.png)
 ![Tela de configuração, rolada para baixo: zonas habilitadas e opções do Receptor IP](docs/images/tela-configuracao-2.png)
+
+---
+
+## Modelos suportados e engenharia reversa por modelo
+
+Além das capturas reais e da documentação oficial, esta lista foi
+fechada com engenharia reversa direta do app oficial (`AMT Mobile`
+v3.4.2.2) — especificamente `Constantes$PanelModelId` (a lista completa
+de modelos que o app reconhece), `Painel`/subclasses (`Amt2018`,
+`Amt2018ESmart`, `Amt4010`, `Anm24Net`, `Amt8000`), e
+`CentralMenuActivity` (`isPanelUsing5c`, `fixModelIdIfIncorrect`,
+`goToSyncNames`).
+
+### O app reconhece 19 modelos — reconstruído aqui como a família 2018
+
+O app oficial internamente instancia **uma classe Java por modelo/grupo
+de modelos**, e cada classe implementa seu próprio comando de status,
+parsing de zonas, etc. — **não é uma correspondência 1:1 entre "modelo"
+e "comportamento"**. O achado mais importante: a classe `Amt2018` (a
+mesma já usada e validada para AMT 2018 E/EG e AMT 1016 NET) é
+literalmente o **fallback padrão** do próprio app para todo modelo que
+não é um caso especial — usa o comando `0x5A`, 48 zonas, nos mesmos
+offsets de byte, **hardcoded, sem nenhuma ramificação por modelo
+específico dentro da classe**. Foi isso que nos deu confiança pra
+adicionar os 8 bytes abaixo sem precisar de hardware pra validar cada
+um individualmente — são literalmente o mesmo código-fonte.
+
+| Byte | Modelo | Confiança |
+|---|---|---|
+| `0x1E` | AMT 2018 E/EG | Testado em hardware real |
+| `0x61` | AMT 1016 NET | Testado em hardware real |
+| `0x41` | AMT 4010 SMART | Testado em hardware real |
+| `0x24` / `0x25` | ANM 24 Net / ANM 24 Net G2 | Confirmado por captura real (status básico); sincronização de nomes usa protocolo próprio, não implementado — ver abaixo |
+| `0x34` | AMT 2018 E Smart | Engenharia reversa, comando de status diferente (ver seção própria abaixo) — não testado |
+| `0x04` | GPRS 1000 UN | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x08` | AMT 2008 RF | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x10` | AMT 2010 | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x18` | AMT 2018 (base) | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x20` | AMT 2110 | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x2E` | AMT 2118 EG | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x30` | AMT 3010 | Engenharia reversa (mesma classe `Amt2018`), não testado |
+| `0x32` | AMT 2018 E3G | Engenharia reversa (mesma classe `Amt2018`), não testado |
+
+### AMT 2018 E Smart (byte `0x34`) — comando de status diferente, mesmos offsets
+
+Essa central usa um comando de status **diferente** do resto da família
+2018: `0x5D` (93 decimal — `const.CMD_STATUS_ESMART`), não `0x5A`. A
+resposta também é bem mais longa: `Amt2018ESmart.updateStatusAttributes()`
+(decompilado do app oficial) referencia posições como `p13.get(94)`, com
+uma checagem `if (p13.size() > 135)` — ou seja, mais de 135 bytes, contra
+os 43 da família 2018 padrão.
+
+A primeira análise deste projeto concluiu que isso tornava o modelo
+incompatível e chegou a **removê-lo** da integração. Uma segunda análise,
+mais cuidadosa, comparou posição por posição os campos que
+`Amt2018ESmart.updateStatusAttributes()`/`updateBatteryStatus()`/
+`updateProblems()` realmente leem contra os offsets que esta integração
+usa (`protocol.parse_status_2018()`) — e todos batem exatamente:
+
+| Campo | Posição no app (`p13.get(N)`) | Posição nesta integração (`content[N-2]`) | Bate? |
+|---|---|---|---|
+| Firmware | `21` | `19` | ✅ |
+| Central particionada | `22`, bit 0 | `20` (status21), bit 0 | ✅ |
+| Partição A ativada | `23`, bit 0 | `21` (status22), bit 0 | ✅ |
+| Partição B ativada | `23`, bit 1 | `21` (status22), bit 1 | ✅ |
+| Sirene disparada | `39`, bit 2 | `37` (status38), bit 2 | ✅ |
+| Falta de rede elétrica | `30`, bit 0 | `28` (status29), bit 0 | ✅ |
+
+(O deslocamento de `-2` entre as duas colunas é porque a lista do app
+inclui `[Nº Bytes][echo]` no início, que nesta integração já são
+removidos por `protocol.parse_frame()` antes de chegar em `content`.)
+
+Os únicos campos **exclusivos** desse modelo (Stay por partição —
+`p13.get(94)`/`(95)` — e um bloco de "status de rede geral", só presente
+quando a resposta passa de 135 bytes) ficam em posições bem depois de
+tudo que já lemos. Ou seja: **o conteúdo extra é estritamente adicional,
+não um layout diferente** — o mesmo `protocol.parse_status_2018()` já
+usado para toda a família 2018 funciona sem nenhuma alteração de offset,
+bastando aceitar uma resposta mais longa como válida (em vez de exigir
+exatamente 43 bytes) e mandar `0x5D` em vez de `0x5A` para esse modelo
+específico.
+
+**Implementação**: `const.MODEL_STATUS_CMD_OVERRIDE` (comando por
+modelo, checado antes do padrão da família) e
+`const.MODEL_STATUS_MIN_LEN_OVERRIDE` (tamanho mínimo aceito, em vez de
+exato, só para este modelo). Na detecção automática
+(`coordinator.async_detect_model()`), `0x5D` é tentado como terceira
+opção, depois de `0x5A` e `0x5B` já terem dado uma resposta parseável
+mas com modelo não reconhecido.
+
+**Ainda em aberto**: não sabemos com certeza como uma central real reage
+ao receber `0x5A` "por engano" antes da detecção descobrir que precisa
+tentar `0x5D` (NACK explícito, silêncio, ou uma resposta ainda assim
+válida) — a estratégia de detecção atual só chega a tentar `0x5D` se
+`0x5A` falhar de forma "limpa" (resposta parseável, modelo
+desconhecido), não se falhar com um erro de conexão mais duro. Não
+testado contra hardware real.
+
+### ANM 24 Net — status básico compatível, sincronização de nomes não
+
+A ANM 24 Net usa o **mesmo comando de status** (`0x5A`) e os **mesmos
+offsets de byte** da família 2018 — confirmado decompilando
+`Anm24Net.updateZones()`, que é estruturalmente idêntico ao de `Amt2018`,
+só com **24 zonas em vez de 48** (bate com o nome: "24 Net"). Por isso
+está na tabela como suportada para status/arme/desarme.
+
+Só a sincronização de nomes de zona/usuário é diferente: o app usa
+comandos próprios e exclusivos para essa central
+(`montarSincronismoZonaAnm24Net`, `montarSincronismoUsuarioAnm24Net`,
+`montarSincronismoNomeCentralAnm24Net`) — nem o comando moderno `0x5C`
+nem o protocolo legado `0xE7` que já implementamos. Não decifrado ainda;
+nomes de zona/eventos não funcionam nesta central via nenhum dos dois
+caminhos existentes.
+
+### Correção de nome: "ANM 24 Net", não "AMN 24 NET"
+
+O nome real, tanto no enum interno do app quanto no texto exibido pra o
+usuário, é **"ANM 24 Net"** — este projeto usava "AMN 24 NET" (letras
+trocadas) desde o início. Corrigido a partir desta versão; puramente
+cosmético, não muda nenhum comportamento.
 
 ---
 
@@ -190,7 +315,7 @@ modelos/firmwares.
 | `button` | Pânico silencioso / audível / emergência médica / incêndio | comando `0x45` |
 | `button` | Anular zonas abertas / Anular zonas violadas / Anular zonas abertas ou violadas | comando `0x42`; preserva anulações já existentes em outras zonas; o terceiro botão une os dois conjuntos numa única operação (evita que uma anulação desfaça a outra, já que o comando é absoluto) |
 | `button` | Remover todas as anulações de zona | comando `0x42`; reativa **todas** as zonas de uma vez (não pede número de zona) |
-| `button` | Sincronizar nomes de zona | só nos modelos/firmwares com acesso ao comando `0x5C` para isso — ver seção "Nomes de zona e log de eventos" abaixo (**não** é mais "só família 4010"; passou a valer para toda a lista, incluindo 2018 EG/E SMART e AMN 24 NET com as ressalvas de firmware) |
+| `button` | Sincronizar nomes de zona | só nos modelos/firmwares com acesso ao comando `0x5C` para isso — ver seção "Nomes de zona e log de eventos" abaixo (**não** é mais "só família 4010"; passou a valer para toda a lista, incluindo 2018 EG/E SMART e ANM 24 Net com as ressalvas de firmware) |
 
 > Todos os `button` acima ficam **indisponíveis** quando a comunicação com
 > a central não está ativa (switch desligado, ou falha de conexão) — não
@@ -951,7 +1076,7 @@ isso que `armed_home` funciona tanto na central quanto em cada partição.
 
 **Restrição por modelo, confirmada em testes**: o modo Stay só funciona de
 verdade na **AMT 4010 SMART** e na **AMT 2018 E SMART** — nos demais
-modelos da família 2018 (AMT 2018 E/EG, AMT 1016 NET, AMN 24 NET), o
+modelos da família 2018 (AMT 2018 E/EG, AMT 1016 NET, ANM 24 Net), o
 comando `0x50` existe no protocolo, mas a central não implementa esse
 modo. Por isso, `armed_home` só aparece como opção nas entidades
 `alarm_control_panel` (central e partições) para esses dois modelos —
@@ -1006,7 +1131,7 @@ papéis fazem mais sentido com números diferentes:
   feedback mais rápido pro usuário quando um comando falha, e reconexão
   mais ágil numa queda real (antes, cada tentativa de reconectar podia
   levar até 8s só pra desistir).
-- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` (8s por padrão)**: quanto tempo
+- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` (10s por padrão)**: quanto tempo
   de **silêncio acumulado** (sem nenhuma consulta de status bem-sucedida)
   a integração tolera antes de marcar as entidades como indisponíveis de
   verdade. Esse número mais generoso evita que um soluço isolado da
@@ -1031,8 +1156,8 @@ funciona assim:
 |---|---|---|
 | Switch "Conexão com a central" desligado | Nenhuma tentativa de comunicação é feita; entidades ficam indisponíveis | `INFO`, só na transição para esse estado (nunca se repete enquanto durar) |
 | Nunca houve nenhuma consulta bem-sucedida ainda | Falha imediata, entidades ficam indisponíveis | `ERROR`, só na primeira vez (não se repete a cada ciclo) |
-| Falha isolada, dentro da janela de tolerância (< 8s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
-| Silêncio acumulado ultrapassa a janela de tolerância (≥ 8s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR`, só na transição (não se repete a cada ciclo enquanto continuar falhando) |
+| Falha isolada, dentro da janela de tolerância (< 10s desde o último sucesso) | Tolerada — mantém o último dado bom conhecido, entidades continuam disponíveis, tenta de novo no próximo ciclo | `WARNING` |
+| Silêncio acumulado ultrapassa a janela de tolerância (≥ 10s desde o último sucesso) | Falha definitiva — entidades ficam indisponíveis | `ERROR`, só na transição (não se repete a cada ciclo enquanto continuar falhando) |
 | Comunicação volta a funcionar depois de uma falha definitiva | Entidades voltam a ficar disponíveis | `WARNING`, avisando quanto tempo ficou indisponível |
 
 **Todas as linhas de `ERROR`/`INFO` de falha acima só aparecem uma vez por
@@ -1097,7 +1222,7 @@ liberado nesse contexto):
 | AMT 4010 SMART | ≥ 3.20 (byte `0x32`) |
 | AMT 1016 NET | ≥ 4.10 (byte `0x41`) |
 | AMT 2018 E SMART | qualquer |
-| AMN 24 NET | qualquer |
+| ANM 24 Net | qualquer |
 
 Ver `coordinator.supports_extended_eeprom` e `const.EEPROM_EXTENDED_MIN_FIRMWARE`.
 Fora dessa lista — **inclusive a AMT 1016 NET com firmware abaixo de

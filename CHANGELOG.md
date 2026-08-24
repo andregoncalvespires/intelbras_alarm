@@ -8,6 +8,63 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.1.0-dev.9] — EXPERIMENTAL, branch `dev`
+
+Ajustes de compatibilidade de modelos, a partir de uma nova rodada de
+engenharia reversa do app oficial (`PanelModelId`, `Painel`/subclasses,
+`CentralMenuActivity`). Inclui uma correção de descuido de sessão
+anterior.
+
+### Corrigido
+- **`DEFAULT_CONNECTION_HEALTH_TIMEOUT` estava em 8s neste branch**,
+  não 10s — a mudança de 8s→10s (ver v2.0.2-beta.1) foi feita só em
+  `main` na época e nunca replicada pro `dev`, passando despercebida
+  até agora. Corrigido no código e nos comentários/documentação.
+- Nome do modelo corrigido de "AMN 24 NET" para **"ANM 24 Net"** (o nome
+  real, tanto no app quanto no enum interno dele) — cosmético.
+
+### Adicionado
+- 8 novos modelos reconhecidos em `MODEL_TABLE`: AMT 2008 RF, AMT 2010,
+  AMT 2018 (base, sem sufixo), AMT 2110, AMT 2118 EG, AMT 3010, AMT 2018
+  E3G e GPRS 1000 UN — confirmado que o app oficial trata todos eles com
+  a mesma classe `Amt2018` já validada para AMT 2018 E/EG e AMT 1016 NET
+  (mesmo comando, mesmas 48 zonas, mesmos offsets, sem nenhuma
+  ramificação por modelo específico). Nenhum foi testado contra hardware
+  real ainda.
+- Byte `0x25` (variante "ANM 24 Net G2") adicionado à `MODEL_TABLE`,
+  reconhecida com o mesmo nome/comportamento da ANM 24 Net normal.
+
+### AMT 2018 E Smart: removida e reimplementada corretamente, na mesma rodada
+
+Uma análise inicial concluiu que esse modelo era incompatível (comando
+de status `0x5D`, resposta de 135+ bytes — bem diferente dos 43 bytes da
+família 2018 padrão) e chegou a remover o suporte. Uma segunda análise,
+pedida explicitamente para reavaliar essa decisão, comparou posição por
+posição os campos que `Amt2018ESmart.updateStatusAttributes()` (app
+oficial, decompilado) realmente lê contra os offsets que esta integração
+usa — e todos batem exatamente (firmware, particionamento, partições
+A/B, sirene, falta de rede elétrica). O conteúdo extra da resposta
+(Stay por partição, status de rede geral) é estritamente adicional, não
+um layout diferente.
+
+- `CMD_STATUS_ESMART = 0x5D` adicionado.
+- `MODEL_STATUS_CMD_OVERRIDE`: comando de status por modelo (checado
+  antes do padrão da família) — hoje só a AMT 2018 E SMART usa isso.
+- `MODEL_STATUS_MIN_LEN_OVERRIDE`: validação de tamanho mínimo (em vez
+  de exato) para esse mesmo modelo, já que a resposta real varia de
+  tamanho.
+- `async_detect_model()`: tenta `0x5D` como terceira opção, depois que
+  `0x5A` e `0x5B` já derem uma resposta parseável mas com modelo não
+  reconhecido.
+- Testado isoladamente: `parse_status_2018()` processa corretamente uma
+  resposta simulada de 140 bytes, sem erro, extraindo modelo e firmware
+  do mesmo offset de sempre.
+- Ainda não testado contra hardware real — ver README_DETALHADO.md,
+  seção "Modelos suportados e engenharia reversa por modelo", para a
+  tabela completa de comparação posição por posição e as ressalvas
+  remanescentes (comportamento da central ao receber `0x5A` "por
+  engano" antes da detecção tentar `0x5D`).
+
 ## [2.1.0-dev.8] — EXPERIMENTAL, branch `dev`
 
 Equipara ao publicado em `main`/v2.0.2-beta.3: correções de bugs reais
