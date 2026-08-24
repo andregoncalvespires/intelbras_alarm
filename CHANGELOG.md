@@ -8,6 +8,39 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.4] — pré-lançamento, não visível por padrão no HACS
+
+Ajustes de compatibilidade de modelos, a partir de uma nova rodada de
+engenharia reversa do app oficial (`PanelModelId`, `Painel`/subclasses,
+`CentralMenuActivity`).
+
+### Removido
+- **Suporte a "AMT 2018 E Smart" (byte `0x34`)**: descoberto, decompilando
+  o app oficial, que esse modelo usa um comando de status próprio
+  (`0x5D`, resposta de mais de 135 bytes) — completamente diferente do
+  `0x5A` que usamos para toda a família 2018. Nunca foi testado contra
+  hardware real; com nossa lógica de detecção atual, é bem provável que a
+  configuração inicial nem completasse contra essa central. Removido em
+  vez de mantido como "suportado" incorretamente — ver
+  README_DETALHADO.md, seção "Modelos suportados e engenharia reversa
+  por modelo", para os detalhes técnicos completos.
+
+### Adicionado
+- 8 novos modelos reconhecidos em `MODEL_TABLE`: AMT 2008 RF, AMT 2010,
+  AMT 2018 (base, sem sufixo), AMT 2110, AMT 2118 EG, AMT 3010, AMT 2018
+  E3G e GPRS 1000 UN — confirmado que o app oficial trata todos eles com
+  a mesma classe `Amt2018` já validada para AMT 2018 E/EG e AMT 1016 NET
+  (mesmo comando, mesmas 48 zonas, mesmos offsets, sem nenhuma
+  ramificação por modelo específico). Nenhum foi testado contra hardware
+  real ainda.
+- Byte `0x25` (variante "ANM 24 Net G2") adicionado à `MODEL_TABLE`,
+  reconhecida com o mesmo nome/comportamento da ANM 24 Net normal.
+
+### Corrigido
+- Nome do modelo corrigido de "AMN 24 NET" para **"ANM 24 Net"** (o nome
+  real, tanto no app quanto no enum interno dele) — cosmético, não muda
+  nenhum comportamento.
+
 ## [2.0.2-beta.3] — pré-lançamento, não visível por padrão no HACS
 
 Correções de bugs reais relatados em testes da v2.0.2-beta.2, todos na

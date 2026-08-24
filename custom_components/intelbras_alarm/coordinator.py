@@ -311,11 +311,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     def supports_stay(self) -> bool:
         """Se este modelo suporta de verdade o comando de ativação em modo Stay.
 
-        Confirmado pelo usuário: só a 4010 e a 2018 E SMART respondem
-        corretamente ao comando 0x50 — nos demais modelos da família 2018
-        (E/EG, 1016 NET, AMN 24 NET) o comando existe no protocolo mas a
-        central não implementa esse modo. Usado para remover a opção
-        `armed_home` da UI nesses modelos (ver alarm_control_panel.py).
+        Confirmado pelo usuário: só a 4010 responde corretamente ao
+        comando 0x50 — nos demais modelos da família 2018 (E/EG, 1016 NET,
+        ANM 24 Net e os demais bytes da tabela) o comando existe no
+        protocolo mas a central não implementa esse modo. "AMT 2018 E
+        SMART" foi removida da lista de modelos suportados por esta
+        integração (ver comentário em const.MODEL_TABLE) — não é mais
+        uma exceção aqui. Usado para remover a opção `armed_home` da UI
+        nesses modelos (ver alarm_control_panel.py).
         """
         from .const import MODELS_SUPPORTING_STAY
 

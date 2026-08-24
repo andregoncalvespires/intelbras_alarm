@@ -380,7 +380,7 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
         if not self.coordinator.supports_stay:
             raise HomeAssistantError(
                 "Este modelo não suporta ativação em modo Stay (armed_home) — "
-                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+                "confirmado apenas para AMT 4010 SMART."
             )
         password = self._resolve_password(code, self._require_code_arm)
         await self.coordinator.async_arm(None, stay=True, password=password)
@@ -436,7 +436,7 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         if not self.coordinator.supports_stay:
             raise HomeAssistantError(
                 "Este modelo não suporta ativação em modo Stay (armed_home) — "
-                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+                "confirmado apenas para AMT 4010 SMART."
             )
         password = self._resolve_password(code, self._require_code_arm, self._partition)
         await self.coordinator.async_arm(self._partition, stay=True, password=password)

@@ -21,9 +21,9 @@
 >   aceitando estes termos.**
 
 Integração HACS para centrais de alarme Intelbras **AMT 1016 NET, AMT 2018
-E/EG, AMT 2018 E SMART, AMN 24 NET e AMT 4010 SMART**, via protocolo
-ISECNet/ISECMobile (o mesmo do app AMT Mobile) — conexão TCP direta e
-persistente com a central.
+E/EG, ANM 24 Net, AMT 4010 SMART** e outros modelos da mesma família (ver
+lista completa abaixo), via protocolo ISECNet/ISECMobile (o mesmo do app
+AMT Mobile) — conexão TCP direta e persistente com a central.
 
 A integração usa as entidades **padrão do próprio Home Assistant** para
 representar a central como uma central de segurança de verdade deveria
@@ -46,12 +46,20 @@ sabotagem, sirene, etc.) como entidades próprias.
 | AMT 4010 SMART | 5.2 | — |
 | AMT 4010 SMART | 6.2 | Comportamento incorreto da central: eventualmente a central envia uma resposta de status menor que o esperado aleatoriamente. Nesses casos, a integração descarta a leitura (tratada como falha isolada, igual a uma queda de conexão) e mantém o último dado bom conhecido — nenhuma entidade muda de valor por causa disso. Só fica indisponível se o problema persistir por mais de 10s seguidos (ver seção de diagnóstico no README_DETALHADO.md). |
 
-Os demais modelos suportados pelo protocolo (AMT 2018 E SMART, AMN 24
-NET) seguem a mesma estrutura, mas ainda não foram validados em hardware
-real — o suporte a eles não é bloqueado por isso, é só para você ter uma
-referência caso relate algum problema. Esta tabela vai sendo atualizada
-conforme outros usuários testarem e
-relatarem outros modelos/firmwares.
+Os demais modelos suportados pelo protocolo (ANM 24 Net, AMT 2008 RF, AMT
+2010, AMT 2018 base, AMT 2110, AMT 2118 EG, AMT 3010, AMT 2018 E3G, GPRS
+1000 UN) seguem a mesma estrutura, mas ainda não foram validados em
+hardware real — o suporte a eles não é bloqueado por isso, é só para você
+ter uma referência caso relate algum problema. Esta tabela vai sendo
+atualizada conforme outros usuários testarem e relatarem outros
+modelos/firmwares.
+
+> ⚠️ **"AMT 2018 E Smart" não é suportada** por esta integração. Engenharia
+> reversa do app oficial mostrou que esse modelo usa um comando de status
+> próprio (diferente de tudo que implementamos, com um formato de resposta
+> bem maior) — tentar usar a integração com essa central específica
+> provavelmente nem completa a configuração inicial. Ver
+> README_DETALHADO.md para os detalhes técnicos.
 
 ![Tela do dispositivo no Home Assistant, mostrando central, partições, PGMs e sirene](docs/images/tela-dispositivo.png)
 
@@ -179,8 +187,7 @@ pede a "Senha de Acesso Remoto" para essas duas funções:
 | AMT 2018 EG | ≥ 7.70 |
 | AMT 4010 SMART | ≥ 3.20 |
 | AMT 1016 NET | ≥ 4.10 |
-| AMT 2018 E SMART | qualquer |
-| AMN 24 NET | qualquer |
+| ANM 24 Net | qualquer |
 
 Fora dessa lista (por exemplo, uma AMT 1016 NET com firmware abaixo de
 4.10), a central usa um protocolo diferente e mais antigo — que, a
