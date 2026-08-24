@@ -52,17 +52,16 @@ de alarme por fora.
 | AMT 4010 SMART | 5.2 | — |
 | AMT 4010 SMART | 6.2 | Esse firmware apresentou comportamento incorreto: enviava uma resposta de status menor que o esperado aleatoriamente. Uma resposta assim **não é mais aceita como status válido** — é tratada como falha de leitura isolada (mesmo mecanismo de tolerância usado para quedas de conexão, ver seção "Tolerância a falhas passageiras"), então nenhuma entidade chega a mostrar um valor incorreto por causa disso; o próximo ciclo de polling (a cada 0,25s por padrão) normalmente já traz a leitura completa de novo. |
 
-Os demais modelos suportados pelo protocolo (ANM 24 Net, AMT 2008 RF, AMT
-2010, AMT 2018 base, AMT 2110, AMT 2118 EG, AMT 3010, AMT 2018 E3G, GPRS
-1000 UN) seguem a mesma estrutura, mas ainda não foram validados em
-hardware real — o suporte a eles não é bloqueado por isso, é só para ter
-uma referência caso algum problema seja relatado. Esta tabela vai sendo
-atualizada conforme outros usuários testarem e relatarem outros
-modelos/firmwares.
+Os demais modelos suportados pelo protocolo (ANM 24 Net, AMT 2018 E
+Smart, AMT 2008 RF, AMT 2010, AMT 2018 base, AMT 2110, AMT 2118 EG, AMT
+3010, AMT 2018 E3G, GPRS 1000 UN) seguem a mesma estrutura, mas ainda não
+foram validados em hardware real — o suporte a eles não é bloqueado por
+isso, é só para ter uma referência caso algum problema seja relatado.
+Esta tabela vai sendo atualizada conforme outros usuários testarem e
+relatarem outros modelos/firmwares.
 
-> ⚠️ **"AMT 2018 E Smart" não é suportada** por esta integração — ver
-> seção "Modelos suportados e engenharia reversa por modelo" mais abaixo
-> para os detalhes técnicos de por quê.
+> ⚠️ **AMT 2018 E Smart** tem uma ressalva técnica própria — ver seção
+> "Modelos suportados e engenharia reversa por modelo" mais abaixo.
 
 ![Tela de configuração da integração](docs/images/tela-configuracao-1.png)
 ![Tela de configuração, rolada para baixo: zonas habilitadas e opções do Receptor IP](docs/images/tela-configuracao-2.png)
@@ -99,6 +98,7 @@ um individualmente — são literalmente o mesmo código-fonte.
 | `0x61` | AMT 1016 NET | Testado em hardware real |
 | `0x41` | AMT 4010 SMART | Testado em hardware real |
 | `0x24` / `0x25` | ANM 24 Net / ANM 24 Net G2 | Confirmado por captura real (status básico); sincronização de nomes usa protocolo próprio, não implementado — ver abaixo |
+| `0x34` | AMT 2018 E Smart | Engenharia reversa, comando de status diferente (ver seção própria abaixo) — não testado |
 | `0x04` | GPRS 1000 UN | Engenharia reversa (mesma classe `Amt2018`), não testado |
 | `0x08` | AMT 2008 RF | Engenharia reversa (mesma classe `Amt2018`), não testado |
 | `0x10` | AMT 2010 | Engenharia reversa (mesma classe `Amt2018`), não testado |
@@ -108,28 +108,63 @@ um individualmente — são literalmente o mesmo código-fonte.
 | `0x30` | AMT 3010 | Engenharia reversa (mesma classe `Amt2018`), não testado |
 | `0x32` | AMT 2018 E3G | Engenharia reversa (mesma classe `Amt2018`), não testado |
 
-### "AMT 2018 E Smart" (byte `0x34`) — removida, não é mais suportada
+### AMT 2018 E Smart (byte `0x34`) — comando de status diferente, mesmos offsets
 
-Diferente do que a versão anterior deste README dizia. Ao decompilar
-`Amt2018ESmart.getStatus()`, encontramos que esse modelo manda o comando
-**`0x5D`** (93 decimal) — **não** o `0x5A` que usamos para toda a família
-2018. E o parsing da resposta (`Amt2018ESmart.updateStatusAttributes()`)
-referencia posições como `p13.get(94)`, com uma checagem
-`if (p13.size() > 135)` — ou seja, é uma resposta de **mais de 135
-bytes**, um formato completamente diferente e bem maior do que qualquer
-coisa que já implementamos (a família 4010, nosso maior status hoje, tem
-54 bytes).
+Essa central usa um comando de status **diferente** do resto da família
+2018: `0x5D` (93 decimal — `const.CMD_STATUS_ESMART`), não `0x5A`. A
+resposta também é bem mais longa: `Amt2018ESmart.updateStatusAttributes()`
+(decompilado do app oficial) referencia posições como `p13.get(94)`, com
+uma checagem `if (p13.size() > 135)` — ou seja, mais de 135 bytes, contra
+os 43 da família 2018 padrão.
 
-Esse modelo nunca esteve no hardware testado por este projeto. Com base
-na nossa própria lógica de detecção automática (tenta `0x5A`, se for
-recusado tenta `0x5B`), o cenário mais provável é que a **configuração
-inicial nem complete** contra uma central dessas de verdade — não é "os
-dados vêm incompletos", é "provavelmente não configura". Corrigir isso
-exigiria decifrar um formato de status inteiro novo, com hardware real
-pra validar — mesmo escopo de trabalho da AMT 8000 (branch `dev`), e sem
-essa central disponível para testes no momento. `AMT 1000 Smart` (byte
-`0x36`) herda exatamente esse mesmo problema (sua classe `Amt1000Smart`
-estende `Amt2018ESmart`) — por isso também não está na tabela.
+A primeira análise deste projeto concluiu que isso tornava o modelo
+incompatível e chegou a **removê-lo** da integração. Uma segunda análise,
+mais cuidadosa, comparou posição por posição os campos que
+`Amt2018ESmart.updateStatusAttributes()`/`updateBatteryStatus()`/
+`updateProblems()` realmente leem contra os offsets que esta integração
+usa (`protocol.parse_status_2018()`) — e todos batem exatamente:
+
+| Campo | Posição no app (`p13.get(N)`) | Posição nesta integração (`content[N-2]`) | Bate? |
+|---|---|---|---|
+| Firmware | `21` | `19` | ✅ |
+| Central particionada | `22`, bit 0 | `20` (status21), bit 0 | ✅ |
+| Partição A ativada | `23`, bit 0 | `21` (status22), bit 0 | ✅ |
+| Partição B ativada | `23`, bit 1 | `21` (status22), bit 1 | ✅ |
+| Sirene disparada | `39`, bit 2 | `37` (status38), bit 2 | ✅ |
+| Falta de rede elétrica | `30`, bit 0 | `28` (status29), bit 0 | ✅ |
+
+(O deslocamento de `-2` entre as duas colunas é porque a lista do app
+inclui `[Nº Bytes][echo]` no início, que nesta integração já são
+removidos por `protocol.parse_frame()` antes de chegar em `content`.)
+
+Os únicos campos **exclusivos** desse modelo (Stay por partição —
+`p13.get(94)`/`(95)` — e um bloco de "status de rede geral", só presente
+quando a resposta passa de 135 bytes) ficam em posições bem depois de
+tudo que já lemos. Ou seja: **o conteúdo extra é estritamente adicional,
+não um layout diferente** — o mesmo `protocol.parse_status_2018()` já
+usado para toda a família 2018 funciona sem nenhuma alteração de offset,
+bastando aceitar uma resposta mais longa como válida (em vez de exigir
+exatamente 43 bytes) e mandar `0x5D` em vez de `0x5A` para esse modelo
+específico.
+
+**Implementação**: `const.MODEL_STATUS_CMD_OVERRIDE` (comando por
+modelo, checado antes do padrão da família) e
+`const.MODEL_STATUS_MIN_LEN_OVERRIDE` (tamanho mínimo aceito, em vez de
+exato, só para este modelo). Na detecção automática
+(`coordinator.async_detect_model()`), `0x5D` é tentado como terceira
+opção, depois de `0x5A` e `0x5B` já terem dado uma resposta parseável
+mas com modelo não reconhecido.
+
+**Ainda em aberto**: não sabemos com certeza como uma central real reage
+ao receber `0x5A` "por engano" antes da detecção descobrir que precisa
+tentar `0x5D` (NACK explícito, silêncio, ou uma resposta ainda assim
+válida) — a estratégia de detecção atual só chega a tentar `0x5D` se
+`0x5A` falhar de forma "limpa" (resposta parseável, modelo
+desconhecido), não se falhar com um erro de conexão mais duro. `AMT 1000
+Smart` (byte `0x36`) provavelmente compartilha esse mesmo comando (sua
+classe `Amt1000Smart` estende `Amt2018ESmart`), mas ainda não está na
+tabela — não confirmamos se o restante do parsing também é idêntico.
+Não testado contra hardware real.
 
 ### ANM 24 Net — status básico compatível, sincronização de nomes não
 
@@ -263,7 +298,7 @@ cosmético, não muda nenhum comportamento.
 
 | Plataforma | Entidade | Observações |
 |---|---|---|
-| `alarm_control_panel` | Central (dispositivo principal) | estados: `disarmed`, `armed_away`, `armed_home`, `triggered` — `armed_home` só disponível em AMT 4010 SMART (ver seção "Modo Stay por partição") |
+| `alarm_control_panel` | Central (dispositivo principal) | estados: `disarmed`, `armed_away`, `armed_home`, `triggered` — `armed_home` só disponível em AMT 4010 SMART e AMT 2018 E SMART (ver seção "Modo Stay por partição") |
 | `alarm_control_panel` | Partição A/B (e C/D na 4010) | uma entidade por partição, só criada se a central estiver **particionada** (`<Partição habilitada>` = 1); mesmos estados e mesma restrição de `armed_home` por modelo da central acima |
 | `switch` | PGM 1..N | N = 2 (2018/1016/SMART) ou até 19 (4010, conforme expansoras); comando `0x50`. **PGM 4 a 19 vêm desabilitadas por padrão** (Configurações → Entidades → mostrar desabilitadas para ativar as que sua instalação usa) — a funcionalidade existe para as 19, mas a central não informa quantas expansoras existem de verdade, então evitamos poluir a lista com entidades provavelmente inúteis |
 | `switch` | Sirene | comandos `0x43`/`0x63`; status lido do Status38 bit 2 (2018/1016) ou Status46 bit 2 (4010) |
@@ -805,11 +840,12 @@ isso que `armed_home` funciona tanto na central quanto em cada partição.
 > do que a tabela da doc, que simplesmente não cobre esse caso.
 
 **Restrição por modelo, confirmada em testes**: o modo Stay só funciona de
-verdade na **AMT 4010 SMART** — nos demais modelos da família 2018 (AMT
-2018 E/EG, AMT 1016 NET, ANM 24 Net e os demais bytes da tabela), o
-comando `0x50` existe no protocolo, mas a central não implementa esse
-modo. Por isso, `armed_home` só aparece como opção nas entidades
-`alarm_control_panel` (central e partições) para esse modelo —
+verdade na **AMT 4010 SMART** e na **AMT 2018 E SMART** — nos demais
+modelos da família 2018 (AMT 2018 E/EG, AMT 1016 NET, ANM 24 Net e os
+demais bytes da tabela), o comando `0x50` existe no protocolo, mas a
+central não implementa esse modo. Por isso, `armed_home` só aparece como
+opção nas entidades `alarm_control_panel` (central e partições) para
+esses dois modelos —
 nos demais, a feature nem é oferecida na UI (`ARM_HOME` fica de fora de
 `supported_features`), e o método correspondente também recusa a chamada
 com um erro claro, caso seja invocado diretamente por um serviço
@@ -947,6 +983,7 @@ liberado nesse contexto):
 | AMT 2018 EG | ≥ 7.70 (byte `0x77`) |
 | AMT 4010 SMART | ≥ 3.20 (byte `0x32`) |
 | AMT 1016 NET | ≥ 4.10 (byte `0x41`) |
+| AMT 2018 E SMART | qualquer |
 | ANM 24 Net | qualquer |
 
 Ver `coordinator.supports_extended_eeprom` e `const.EEPROM_EXTENDED_MIN_FIRMWARE`.

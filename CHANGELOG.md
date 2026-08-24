@@ -8,6 +8,39 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.5] — pré-lançamento, não visível por padrão no HACS
+
+### AMT 2018 E Smart: removida na v2.0.2-beta.4, reimplementada corretamente agora
+
+Uma análise inicial concluiu que esse modelo era incompatível (comando
+de status `0x5D`, resposta de 135+ bytes — bem diferente dos 43 bytes da
+família 2018 padrão) e chegou a remover o suporte. Uma segunda análise,
+pedida explicitamente para reavaliar essa decisão, comparou posição por
+posição os campos que `Amt2018ESmart.updateStatusAttributes()` (app
+oficial, decompilado) realmente lê contra os offsets que esta integração
+usa — e todos batem exatamente (firmware, particionamento, partições
+A/B, sirene, falta de rede elétrica). O conteúdo extra da resposta
+(Stay por partição, status de rede geral) é estritamente adicional, não
+um layout diferente.
+
+- `CMD_STATUS_ESMART = 0x5D` adicionado.
+- `MODEL_STATUS_CMD_OVERRIDE`: comando de status por modelo (checado
+  antes do padrão da família) — hoje só a AMT 2018 E SMART usa isso.
+- `MODEL_STATUS_MIN_LEN_OVERRIDE`: validação de tamanho mínimo (em vez
+  de exato) para esse mesmo modelo, já que a resposta real varia de
+  tamanho.
+- `async_detect_model()`: tenta `0x5D` como terceira opção, depois que
+  `0x5A` e `0x5B` já derem uma resposta parseável mas com modelo não
+  reconhecido.
+- Testado isoladamente: `parse_status_2018()` processa corretamente uma
+  resposta simulada de 140 bytes, sem erro, extraindo modelo e firmware
+  do mesmo offset de sempre.
+- Ainda não testado contra hardware real — ver README_DETALHADO.md,
+  seção "Modelos suportados e engenharia reversa por modelo", para a
+  tabela completa de comparação posição por posição e as ressalvas
+  remanescentes (comportamento da central ao receber `0x5A` "por
+  engano" antes da detecção tentar `0x5D`).
+
 ## [2.0.2-beta.4] — pré-lançamento, não visível por padrão no HACS
 
 Ajustes de compatibilidade de modelos, a partir de uma nova rodada de
