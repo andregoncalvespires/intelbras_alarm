@@ -24,8 +24,18 @@ body:
       options:
         - AMT 1016 NET
         - AMT 2018 E/EG
-        - AMT 2018 E SMART
-        - AMN 24 NET
+        - AMT 2018 (base, sem sufixo)
+        - AMT 2018 E Smart
+        - AMT 2018 E3G
+        - AMT 2008 RF
+        - AMT 2010
+        - AMT 2110
+        - AMT 2118 EG
+        - AMT 3010
+        - AMT 1000 Smart
+        - GPRS 1000 UN
+        - ANM 24 Net
+        - ANM 24 Net G2
         - AMT 4010 SMART
         - Outro (descreva abaixo)
     validations:

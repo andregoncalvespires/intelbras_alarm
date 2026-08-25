@@ -1,0 +1,102 @@
+name: ✅ Relatar modelo/firmware testado
+description: Confirme que sua central (modelo/firmware) funcionou — ajuda a manter a tabela de compatibilidade atualizada
+title: "[Compatibilidade] "
+labels: ["relato-compatibilidade"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por contribuir! Este formulário é só para **relatar que
+        testou** um modelo/firmware — não é para reportar problemas (use o
+        template "🐛 Reportar um problema" para isso) nem sugerir
+        funcionalidades.
+
+        As informações preenchidas aqui podem ser usadas para atualizar a
+        tabela de "Modelos/firmwares testados" do README.
+
+  - type: dropdown
+    id: modelo
+    attributes:
+      label: Modelo da central
+      options:
+        - AMT 1016 NET
+        - AMT 2018 E/EG
+        - AMT 2018 (base, sem sufixo)
+        - AMT 2018 E Smart
+        - AMT 2018 E3G
+        - AMT 2008 RF
+        - AMT 2010
+        - AMT 2110
+        - AMT 2118 EG
+        - AMT 3010
+        - AMT 1000 Smart
+        - GPRS 1000 UN
+        - ANM 24 Net
+        - ANM 24 Net G2
+        - AMT 4010 SMART
+        - Outro (descreva abaixo)
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Firmware da central
+      description: Visível no atributo "Firmware" do dispositivo, ou na tela de status da central
+      placeholder: "ex.: 5.2"
+    validations:
+      required: true
+
+  - type: input
+    id: versao_integracao
+    attributes:
+      label: Versão da integração testada
+      description: Visível em Configurações → Dispositivos e Serviços → Intelbras Alarm
+      placeholder: "ex.: v2.0.2"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: validado
+    attributes:
+      label: O que você testou e confirmou funcionando
+      description: Marque tudo que testou de verdade — não precisa marcar o que não chegou a usar
+      options:
+        - label: Status básico / arme / desarme (central inteira)
+        - label: Arme/desarme por partição (se sua central for particionada)
+        - label: Modo Stay (armed_home)
+        - label: Sincronização de nomes de zona (comando 0x5C ou o caminho legado com senha)
+        - label: Leitura de log de eventos
+        - label: Receptor IP (recepção de eventos em tempo real)
+        - label: PGMs (saídas programáveis)
+        - label: Anular/reativar zonas (bypass)
+
+  - type: dropdown
+    id: resultado
+    attributes:
+      label: Resultado geral
+      options:
+        - Funcionou perfeitamente, sem nenhum problema
+        - Funcionou, mas com ressalvas (descreva abaixo)
+        - Não funcionou (descreva abaixo — considere abrir também um "Reportar um problema" com log)
+    validations:
+      required: true
+
+  - type: textarea
+    id: observacoes
+    attributes:
+      label: Observações, ressalvas ou detalhes adicionais
+      description: Qualquer coisa que valha registrar — comportamento diferente do documentado, dúvidas, etc.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirmacoes
+    attributes:
+      label: Antes de enviar
+      options:
+        - label: >-
+            Autorizo usar as informações acima para atualizar a tabela de
+            compatibilidade do README (com crédito, se quiser ser
+            mencionado, diga como no campo de observações)
+          required: true
