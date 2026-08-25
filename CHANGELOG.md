@@ -4,14 +4,6 @@ Este projeto passa a seguir [Versionamento Semântico](https://semver.org/lang/p
 a partir da v2.0.0 — a primeira versão pública, liberada para a comunidade
 via HACS.
 
-O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
-consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
-é registrada aqui antes de cada release.
-
-## [2.0.2-beta.6] — pré-lançamento, não visível por padrão no HACS
-
-**Última beta antes de v2.1.0 oficial** (assumindo validação bem-sucedida).
-
 ### Adicionado — AMT 2018 E Smart, dados adicionais (resposta 0x5D)
 
 Engenharia reversa direta do app oficial (`Amt2018ESmart.
