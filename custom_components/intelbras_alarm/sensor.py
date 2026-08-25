@@ -10,7 +10,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IntelbrasAlarmData
-from .const import CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED, DOMAIN, MANUFACTURER
+from .const import (
+    CONF_RECEPTOR_IP_ENABLED,
+    DEFAULT_RECEPTOR_IP_ENABLED,
+    DOMAIN,
+    MANUFACTURER,
+    MODEL_2018_SMART,
+)
 from .coordinator import IntelbrasAlarmCoordinator
 
 
@@ -19,39 +25,44 @@ async def async_setup_entry(
 ) -> None:
     data: IntelbrasAlarmData = hass.data[DOMAIN][entry.entry_id]
     coordinator = data.coordinator
-    async_add_entities(
-        [
-            IntelbrasBatterySensor(coordinator, entry),
-            IntelbrasZoneCountSensor(
-                coordinator, entry, key="open", name="Zonas abertas", icon="mdi:door-open"
-            ),
-            IntelbrasZoneCountSensor(
-                coordinator,
-                entry,
-                key="violated",
-                name="Zonas violadas",
-                icon="mdi:alert-circle-outline",
-            ),
-            IntelbrasZoneCountSensor(
-                coordinator,
-                entry,
-                key="bypassed",
-                name="Zonas anuladas",
-                icon="mdi:door-closed-lock",
-            ),
-            IntelbrasZoneCountSensor(
-                coordinator,
-                entry,
-                key="low_battery",
-                name="Zonas com bateria baixa",
-                icon="mdi:battery-alert-variant-outline",
-            ),
-            IntelbrasLastCommandResultSensor(coordinator, entry),
-            IntelbrasRecentEventsSensor(coordinator, entry),
-            IntelbrasReceptorLastEventSensor(coordinator, entry),
-            IntelbrasReceptorHeartbeatSensor(coordinator, entry),
-        ]
-    )
+    entities = [
+        IntelbrasBatterySensor(coordinator, entry),
+        IntelbrasZoneCountSensor(
+            coordinator, entry, key="open", name="Zonas abertas", icon="mdi:door-open"
+        ),
+        IntelbrasZoneCountSensor(
+            coordinator,
+            entry,
+            key="violated",
+            name="Zonas violadas",
+            icon="mdi:alert-circle-outline",
+        ),
+        IntelbrasZoneCountSensor(
+            coordinator,
+            entry,
+            key="bypassed",
+            name="Zonas anuladas",
+            icon="mdi:door-closed-lock",
+        ),
+        IntelbrasZoneCountSensor(
+            coordinator,
+            entry,
+            key="low_battery",
+            name="Zonas com bateria baixa",
+            icon="mdi:battery-alert-variant-outline",
+        ),
+        IntelbrasLastCommandResultSensor(coordinator, entry),
+        IntelbrasRecentEventsSensor(coordinator, entry),
+        IntelbrasReceptorLastEventSensor(coordinator, entry),
+        IntelbrasReceptorHeartbeatSensor(coordinator, entry),
+    ]
+    # Só a AMT 2018 E SMART manda esses dados (resposta 0x5D) — ver
+    # protocol.parse_status_2018_esmart_extra e
+    # README_DETALHADO.md.
+    if coordinator.model_key == MODEL_2018_SMART:
+        entities.append(IntelbrasESmartNetworkSensor(coordinator, entry))
+        entities.append(IntelbrasESmartCellularSensor(coordinator, entry))
+    async_add_entities(entities)
 
 
 def _device_info(entry: ConfigEntry) -> DeviceInfo:
@@ -342,4 +353,94 @@ class IntelbrasReceptorHeartbeatSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
     @property
     def native_value(self):
         return self.coordinator.receptor_last_heartbeat
+
+
+class IntelbrasESmartNetworkSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Diagnóstico de rede — só existe na AMT 2018 E SMART.
+
+    Extraído da resposta de status 0x5D (``const.CMD_STATUS_ESMART``),
+    bytes 136-163 na numeração do app oficial — ver
+    ``protocol.parse_status_2018_esmart_extra`` e README_DETALHADO.md,
+    seção "AMT 2018 E Smart — dados adicionais". A resposta real varia
+    de tamanho; se vier curta demais para alcançar essa seção, o estado
+    fica ``None`` e os atributos ficam ausentes — nunca inventamos um
+    valor. **Não validado contra hardware real.**
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Rede (diagnóstico)"
+    _attr_icon = "mdi:ip-network-outline"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_esmart_network"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> str | None:
+        extra = self.coordinator.esmart_extra
+        return extra.data_network_type if extra else None
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        extra = self.coordinator.esmart_extra
+        if extra is None:
+            return {}
+        return {
+            "ip1_ethernet_online": extra.ip1_ethernet_online,
+            "ip2_ethernet_online": extra.ip2_ethernet_online,
+            "cloud_ethernet_online": extra.cloud_ethernet_online,
+            "ip1_celular_online": extra.ip1_cellular_online,
+            "ip2_celular_online": extra.ip2_cellular_online,
+            "cloud_celular_online": extra.cloud_cellular_online,
+            "endereco_ip": extra.ip_address,
+            "mascara_rede": extra.netmask,
+            "gateway": extra.gateway,
+            "dns1": extra.dns1,
+            "dns2": extra.dns2,
+            "endereco_mac": extra.mac_address,
+        }
+
+
+class IntelbrasESmartCellularSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Diagnóstico do módulo celular/SIM — só existe na AMT 2018 E SMART.
+
+    Mesma origem/ressalvas de ``IntelbrasESmartNetworkSensor`` — bytes
+    164-203 na numeração do app oficial. Chip ID (ICCID) e IMEI ficam
+    nos atributos por serem identificadores mais sensíveis, não no
+    estado principal da entidade.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Módulo celular (diagnóstico)"
+    _attr_icon = "mdi:sim"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_esmart_cellular"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> str | None:
+        extra = self.coordinator.esmart_extra
+        if extra is None or not extra.cellular_module_present:
+            return None
+        return extra.cellular_module_type
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        extra = self.coordinator.esmart_extra
+        if extra is None:
+            return {}
+        return {
+            "modulo_presente": extra.cellular_module_present,
+            "sinal_celular_percent": extra.cellular_signal_percent,
+            "chip_em_uso": extra.chip_in_use,
+            "operadora": extra.carrier,
+            "chip_id": extra.chip_id,
+            "imei": extra.imei,
+        }
+
 

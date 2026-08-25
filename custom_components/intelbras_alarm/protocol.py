@@ -510,6 +510,180 @@ def parse_status_2018(content: bytes) -> PanelStatus:
     )
 
 
+@dataclass
+class ESmartExtraStatus:
+    """Dados adicionais presentes só na resposta 0x5D da AMT 2018 E SMART
+    (``const.CMD_STATUS_ESMART``), além dos campos padrão já cobertos por
+    ``PanelStatus``/``parse_status_2018``.
+
+    Nada aqui é garantido — a resposta real varia de tamanho (já
+    observamos uma captura real com só 95 bytes de conteúdo, bem menos
+    que os ~204 necessários pra cobrir tudo). Cada campo fica ``None``
+    (ou os dicionários ficam vazios) se a resposta não for longa o
+    bastante para alcançá-lo — nunca inventamos um valor.
+
+    Extraído por engenharia reversa do app oficial (`Amt2018ESmart.
+    updateZonesDevicesStatus()`/`updateGeneralNetworkStatus()`/
+    `updateStatusAttributes()`/`defineStay()`), com um exemplo de captura
+    real cruzado (checksum e byte de modelo confirmados, mas curto
+    demais pra validar os valores das seções abaixo). Ver
+    README_DETALHADO.md, seção "AMT 2018 E Smart — dados adicionais".
+    """
+
+    # content[92] (byte 94 na numeração do app) — Stay reportado pela
+    # própria central (diferente do nosso controle local de "o último
+    # comando enviado foi Stay", usado por todos os outros modelos).
+    stay_a_reported: bool | None = None
+    stay_b_reported: bool | None = None
+
+    # Só zonas 25-48 têm esses dados no app oficial (zonas 1-24 são
+    # sempre fiadas nessa central; 25-48 são a faixa sem fio/expansão).
+    zones_wireless: dict[int, bool] = field(default_factory=dict)
+    zones_tamper_esmart: dict[int, bool] = field(default_factory=dict)
+    zones_short_circuit_esmart: dict[int, bool] = field(default_factory=dict)
+    zones_battery_low_esmart: dict[int, bool] = field(default_factory=dict)
+    zones_supervised: dict[int, bool] = field(default_factory=dict)
+    zones_supervision_failure: dict[int, bool] = field(default_factory=dict)
+    zones_device_model: dict[int, str] = field(default_factory=dict)  # "XAS"/"IVP"
+
+    # Rede (content[134:162], bytes 136-163 na numeração do app)
+    data_network_type: str | None = None  # "GPRS"/"3G"/"4G"
+    ip1_ethernet_online: bool | None = None
+    ip2_ethernet_online: bool | None = None
+    cloud_ethernet_online: bool | None = None
+    ip1_cellular_online: bool | None = None
+    ip2_cellular_online: bool | None = None
+    cloud_cellular_online: bool | None = None
+    ip_address: str | None = None
+    netmask: str | None = None
+    gateway: str | None = None
+    dns1: str | None = None
+    dns2: str | None = None
+    mac_address: str | None = None
+
+    # Celular (content[162:202], bytes 164-203 na numeração do app)
+    cellular_module_present: bool | None = None
+    cellular_module_type: str | None = None  # "XG 2G"/"XG 3G"/"XG 4G"
+    cellular_signal_percent: int | None = None
+    chip_in_use: int | None = None
+    carrier: str | None = None
+    chip_id: str | None = None
+    imei: str | None = None
+
+
+def parse_status_2018_esmart_extra(content: bytes) -> ESmartExtraStatus:
+    """Extrai os dados adicionais da resposta 0x5D da AMT 2018 E SMART.
+
+    Sempre recebe ``content`` inteiro (pode ter de 43 a ~204+ bytes) —
+    cada seção só é preenchida se ``content`` for longo o bastante para
+    alcançá-la, do contrário fica com os valores padrão (``None``/dict
+    vazio) da dataclass.
+    """
+    extra = ESmartExtraStatus()
+
+    def bit(idx: int, n: int) -> bool | None:
+        """Bit ``n`` (0=LSB) do byte em ``content[idx]``, ou ``None`` se
+        ``content`` não alcançar esse índice."""
+        if idx >= len(content):
+            return None
+        return bool((content[idx] >> n) & 1)
+
+    # --- Stay reportado pela central (content[92]) ---
+    stay_byte = 92
+    if stay_byte < len(content):
+        extra.stay_a_reported = bit(stay_byte, 0)
+        extra.stay_b_reported = bit(stay_byte, 1)
+
+    # --- Zonas 25-48: bitmaps de 3 bytes cada (zonas 25-48 = 24 zonas =
+    # 3 bytes de 8 bits), começando no offset-base de cada campo + o
+    # grupo de 8 zonas (0,1,2) dentro da faixa 25-48. ---
+    ZONE_FIRST = 25
+    ZONE_LAST = 48
+    campos_bitmap = [
+        ("zones_wireless", 62),
+        ("zones_tamper_esmart", 68),
+        ("zones_short_circuit_esmart", 74),
+        ("zones_supervised", 130),  # "modo supervisão" (base 132 na doc)
+        ("zones_supervision_failure", 95),
+    ]
+    for nome_campo, base in campos_bitmap:
+        destino: dict[int, bool] = {}
+        for zona in range(ZONE_FIRST, ZONE_LAST + 1):
+            grupo = (zona - 1) // 8  # 0, 1 ou 2 dentro da faixa 25-48
+            idx = base + grupo
+            valor = bit(idx, (zona - 1) % 8)
+            if valor is not None:
+                destino[zona] = valor
+        setattr(extra, nome_campo, destino)
+
+    # Bateria usa lógica invertida no app (bit '0' = ok, '1' = baixa) —
+    # ver docstring da dataclass. Convertido aqui pra "True = bateria
+    # baixa", consistente com zones_low_battery já usado no resto da
+    # integração.
+    destino_bateria: dict[int, bool] = {}
+    for zona in range(ZONE_FIRST, ZONE_LAST + 1):
+        grupo = (zona - 1) // 8
+        idx = 80 + grupo
+        valor = bit(idx, (zona - 1) % 8)
+        if valor is not None:
+            destino_bateria[zona] = valor  # bit=1 já significa "baixa" (ver bit())
+    extra.zones_battery_low_esmart = destino_bateria
+
+    # Modelo do dispositivo por zona: "XAS" (bit=0) ou "IVP" (bit=1)
+    destino_modelo: dict[int, str] = {}
+    for zona in range(ZONE_FIRST, ZONE_LAST + 1):
+        grupo = (zona - 1) // 8
+        idx = 98 + grupo
+        valor = bit(idx, (zona - 1) % 8)
+        if valor is not None:
+            destino_modelo[zona] = "IVP" if valor else "XAS"
+    extra.zones_device_model = destino_modelo
+
+    # --- Rede (content[134] em diante) ---
+    if 134 < len(content):
+        extra.data_network_type = {0: "GPRS", 1: "3G"}.get(content[134], "4G")
+    if 135 < len(content):
+        conexoes = content[135]
+        extra.ip1_ethernet_online = bool((conexoes >> 0) & 1)
+        extra.ip2_ethernet_online = bool((conexoes >> 1) & 1)
+        extra.cloud_ethernet_online = bool((conexoes >> 2) & 1)
+        extra.ip1_cellular_online = bool((conexoes >> 4) & 1)
+        extra.ip2_cellular_online = bool((conexoes >> 5) & 1)
+        extra.cloud_cellular_online = bool((conexoes >> 6) & 1)
+
+    def ipv4(base: int) -> str | None:
+        fim = base + 4
+        if fim > len(content):
+            return None
+        return ".".join(str(b) for b in content[base:fim])
+
+    extra.ip_address = ipv4(136)
+    extra.netmask = ipv4(140)
+    extra.gateway = ipv4(144)
+    extra.dns1 = ipv4(148)
+    extra.dns2 = ipv4(152)
+    if 162 <= len(content):
+        extra.mac_address = ":".join(f"{b:02X}" for b in content[156:162])
+
+    # --- Celular/SIM (content[162] em diante) ---
+    if 162 < len(content):
+        extra.cellular_module_present = content[162] != 0
+    if extra.cellular_module_present and 163 < len(content):
+        extra.cellular_module_type = {1: "XG 2G", 2: "XG 3G", 3: "XG 4G"}.get(content[163])
+        if 164 < len(content):
+            extra.cellular_signal_percent = content[164]
+        if 165 < len(content):
+            extra.chip_in_use = content[165]
+        if 166 < len(content):
+            extra.carrier = {0: "Claro", 1: "Oi", 2: "Tim", 3: "Vivo"}.get(content[166], "Desconhecida")
+        if 187 <= len(content):
+            extra.chip_id = "".join(chr(b) for b in content[167:187] if 32 <= b < 127)
+        if 202 <= len(content):
+            extra.imei = "".join(chr(b) for b in content[187:202] if 32 <= b < 127)
+
+    return extra
+
+
 def parse_status_4010(content: bytes) -> PanelStatus:
     """Parseia a resposta do comando 0x5B (até 54 bytes) — família 4010."""
     from .const import MODEL_TABLE, MODEL_UNKNOWN

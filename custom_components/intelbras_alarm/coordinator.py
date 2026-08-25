@@ -33,6 +33,7 @@ from .const import (
     FAMILY_STATUS_CMD,
     FAMILY_STATUS_LEN,
     InvalidZoneSpec,
+    MODEL_2018_SMART,
     MODEL_STATUS_CMD_OVERRIDE,
     MODEL_STATUS_MIN_LEN_OVERRIDE,
     MODEL_TABLE,
@@ -45,6 +46,7 @@ from .const import (
 )
 from .panel_client import PanelClient, PanelConnectionError
 from .protocol import (
+    ESmartExtraStatus,
     NackError,
     PanelStatus,
     ParsedFrame,
@@ -61,6 +63,7 @@ from .protocol import (
     parse_event_record,
     parse_hex_bytes,
     parse_status,
+    parse_status_2018_esmart_extra,
     raise_for_ack,
 )
 
@@ -97,6 +100,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             CONF_LEGACY_EEPROM_PASSWORD
         ) or None
         self.zone_names: dict[int, str] = {}
+        # Dados adicionais só existentes na resposta 0x5D (AMT 2018 E
+        # SMART) — rede, celular, IMEI, atributos extras de zona (25-48).
+        # None nos demais modelos; nunca fica None pra AMT 2018 E SMART
+        # depois da primeira consulta bem-sucedida (mesmo que várias
+        # seções internas estejam vazias, se a resposta for curta).
+        self.esmart_extra: ESmartExtraStatus | None = None
         # Eventos mais recentes já lidos (limitado a
         # EVENT_ENTITY_RECENT_COUNT, ordenados do mais novo pro mais
         # velho por data/hora real do registro — NÃO pela ordem de
@@ -441,6 +450,8 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     )
 
             status = parse_status(response.content, self.family)
+            if self.model_key == MODEL_2018_SMART:
+                self.esmart_extra = parse_status_2018_esmart_extra(response.content)
         except (PanelConnectionError, UpdateFailed, IndexError, ValueError) as err:
             self._handle_poll_failure(err)
             # _handle_poll_failure() levanta UpdateFailed se a falha não for

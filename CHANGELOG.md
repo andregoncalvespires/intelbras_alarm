@@ -8,6 +8,46 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado nesta primeira entrada; a partir daqui, toda mudança relevante
 é registrada aqui antes de cada release.
 
+## [2.0.2-beta.6] — pré-lançamento, não visível por padrão no HACS
+
+**Última beta antes de v2.1.0 oficial** (assumindo validação bem-sucedida).
+
+### Adicionado — AMT 2018 E Smart, dados adicionais (resposta 0x5D)
+
+Engenharia reversa direta do app oficial (`Amt2018ESmart.
+updateZonesDevicesStatus()`/`updateGeneralNetworkStatus()`), cruzada com
+uma captura real fornecida pelo usuário.
+
+- 2 novas entidades `sensor`, só criadas pra esse modelo: **"Rede
+  (diagnóstico)"** (tipo de conexão, status de cada link, IP, máscara,
+  gateway, DNS1/2, MAC) e **"Módulo celular (diagnóstico)"** (tipo do
+  módulo, sinal, chip em uso, operadora, Chip ID/ICCID, IMEI).
+- Atributos extras nas entidades de zona já existentes, só pras zonas
+  25-48 (a central trata 1-24 como sempre fiadas): `sem_fio`,
+  `tamper_esmart`, `curto_circuito_esmart`, `bateria_baixa_esmart`,
+  `supervisionada`, `falha_supervisao`, `modelo_dispositivo`.
+- Atributo `stay_reportado_pela_central` nas entidades de partição (e
+  `stay_reportado_particao_a`/`_b` na central) — reflete o que a
+  própria central diz sobre o modo Stay, complementar ao estado
+  `armed_home` já existente (que usa controle local desta integração).
+- Validação de tamanho de resposta ajustada: exige só o mínimo de 43
+  bytes (igual à família 2018 padrão), não um valor mais alto — cada
+  seção nova fica ausente/vazia graciosamente se a resposta não for
+  longa o bastante, sem gerar erro algum. Confirmado necessário: já
+  observamos uma captura real válida bem mais curta que o "tamanho
+  completo" teórico.
+- Corrigidos, durante o desenvolvimento (antes de qualquer publicação),
+  dois bugs reais na fórmula de extração de bit por zona.
+- Deliberadamente **não implementado**: nível de sinal RF por zona
+  (byte 108) — indexação mais arriscada de reproduzir sem hardware
+  real pra validar (contador condicional, não um padrão simples de bit
+  por zona como os demais campos).
+- **Nada disso foi testado contra hardware real** — ver
+  README_DETALHADO.md, seção "AMT 2018 E Smart — dados adicionais",
+  para as ressalvas completas (inclusive um achado que precisa de
+  confirmação em campo: um dos bytes testados veio não-zero na captura
+  real disponível, sem como confirmar se reflete a instalação real).
+
 ## [2.0.2-beta.5] — pré-lançamento, não visível por padrão no HACS
 
 ### AMT 2018 E Smart: removida na v2.0.2-beta.4, reimplementada corretamente agora

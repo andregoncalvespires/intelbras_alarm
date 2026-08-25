@@ -366,6 +366,13 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
                 "data_hora_central": status.panel_datetime_str,
             }
         )
+        # AMT 2018 E SMART: idem à entidade de partição — ver lá.
+        extra = self.coordinator.esmart_extra
+        if extra is not None:
+            if extra.stay_a_reported is not None:
+                attrs["stay_reportado_particao_a"] = extra.stay_a_reported
+            if extra.stay_b_reported is not None:
+                attrs["stay_reportado_particao_b"] = extra.stay_b_reported
         return attrs
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:
@@ -422,6 +429,17 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         if status is not None and self._partition in status.partition_bit_map:
             byte_name, bit_index = status.partition_bit_map[self._partition]
             attrs["bit_desta_particao"] = f"bit {bit_index} do {byte_name}"
+        # AMT 2018 E SMART: a própria central reporta se esta partição
+        # está armada em Stay especificamente (byte 94 da resposta 0x5D) —
+        # diferente do estado armed_home acima, que usa o controle local
+        # desta integração (lembrar qual foi o último comando enviado).
+        # Ver protocol.parse_status_2018_esmart_extra. Não validado contra
+        # hardware real.
+        extra = self.coordinator.esmart_extra
+        if extra is not None and self._partition in ("A", "B"):
+            valor = extra.stay_a_reported if self._partition == "A" else extra.stay_b_reported
+            if valor is not None:
+                attrs["stay_reportado_pela_central"] = valor
         return attrs
 
     async def async_alarm_disarm(self, code: str | None = None) -> None:

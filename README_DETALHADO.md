@@ -166,6 +166,66 @@ classe `Amt1000Smart` estende `Amt2018ESmart`), mas ainda não está na
 tabela — não confirmamos se o restante do parsing também é idêntico.
 Não testado contra hardware real.
 
+### AMT 2018 E Smart — dados adicionais (rede, celular, zonas sem fio)
+
+A resposta `0x5D` carrega bem mais dados do que os 43 bytes padrão da
+família 2018 — até ~204 bytes, cobrindo diagnóstico de rede/celular e
+atributos extras de zona. Confirmado por engenharia reversa direta
+(`Amt2018ESmart.updateZonesDevicesStatus()`/`updateGeneralNetworkStatus()`),
+cruzado com uma captura real fornecida pelo usuário (checksum e byte de
+modelo confirmados, mas curta demais — só 95 bytes — para validar os
+valores dessas seções extras).
+
+**A resposta real varia de tamanho** — já observamos uma captura válida
+bem mais curta que o "tamanho completo" teórico. Por isso a validação
+desta integração (`const.MODEL_STATUS_MIN_LEN_OVERRIDE`) exige só o
+mínimo de 43 bytes (o mesmo da família 2018 padrão), não um valor mais
+alto — cada seção abaixo simplesmente fica ausente/vazia se a resposta
+não for longa o bastante pra alcançá-la, sem gerar erro algum
+(`protocol.parse_status_2018_esmart_extra`).
+
+**Rede e celular** — duas entidades novas de diagnóstico, só criadas pra
+esse modelo: **"Rede (diagnóstico)"** (tipo de conexão, status online de
+cada link Ethernet/celular/Cloud, IP, máscara, gateway, DNS1/2, MAC) e
+**"Módulo celular (diagnóstico)"** (tipo do módulo, sinal, chip em uso,
+operadora, Chip ID/ICCID, IMEI). Todos os offsets (bytes 136-203 na
+numeração do app) foram confirmados byte a byte, decompilando
+`updateGeneralNetworkStatus()` — inclusive a fórmula de IP/máscara/
+gateway/DNS (4 bytes cada) e o esquema de Chip ID/IMEI (cada caractere é
+o código ASCII bruto do dígito, não BCD).
+
+**Atributos extras nas zonas 25-48** — a central trata as zonas 1-24
+como sempre fiadas; só 25-48 têm essa telemetria adicional (`sem_fio`,
+`tamper_esmart`, `curto_circuito_esmart`, `bateria_baixa_esmart`,
+`supervisionada`, `falha_supervisao`, `modelo_dispositivo`) como
+atributos extras na própria entidade de zona já existente (não são
+entidades novas). Deliberadamente **não implementamos** o campo de nível
+de sinal RF por zona (byte 108) — o app usa um contador condicional mais
+complexo pra indexar esse campo específico (só incrementa para zonas que
+já passaram por outras condições), com risco maior de erro sem hardware
+real pra validar; os demais campos usam um padrão bem mais simples (1
+bit por zona, a cada 8 zonas), que replicamos com confiança.
+
+**Stay reportado pela central** — atributo novo `stay_reportado_pela_central`
+nas entidades de partição (e `stay_reportado_particao_a`/`_b` na central).
+Diferente do estado `armed_home` já existente (que usa o controle local
+desta integração, lembrando qual foi o último comando enviado — o único
+mecanismo que funciona pra todos os outros modelos, já que eles não
+reportam isso na resposta), esse atributo novo reflete o que a **própria
+central diz** sobre o modo Stay de cada partição (byte 94 da resposta).
+
+**Achado que precisa de confirmação em campo**: na captura real fornecida
+pelo usuário, o byte correspondente às "zonas sem fio 25-31" veio como
+`0x7F` (não-zero) — um valor genuíno, não um erro de leitura, mas sem
+como confirmar se aquela central específica realmente tinha zonas
+sem fio configuradas nessa faixa no momento da captura. Vale checar
+isso contra a realidade da instalação, se possível.
+
+**Nenhuma dessas três frentes foi testada contra hardware real** — só
+validadas via engenharia reversa do app oficial e testes isolados com
+dados simulados/parciais (o exemplo real disponível é curto demais para
+cobrir a maior parte dos campos). Ver `CHANGELOG.md`.
+
 ### ANM 24 Net — status básico compatível, sincronização de nomes não
 
 A ANM 24 Net usa o **mesmo comando de status** (`0x5A`) e os **mesmos
@@ -315,6 +375,7 @@ cosmético, não muda nenhum comportamento.
 | `sensor` | Zonas abertas / Zonas violadas / Zonas anuladas / Zonas com bateria baixa (contadores) | diagnóstico; atributo `zonas` com a lista dos números das zonas naquele estado (e `zonas_nomes` também, se a central informar nomes — família 4010), "Zonas com bateria baixa" soma o bitmap de sensores sem fio (Status39-43 na 2018/1016, Status47-52 na 4010 — só zonas 17-64 na 4010, que é a única faixa com sensor sem fio nesse modelo) |
 | `sensor` | Último comando | diagnóstico — grava a **ação enviada** assim que o comando sai (ex.: `"Ativar Partição A..."`) e depois **atualiza** com o resultado (ex.: `"Ativar Partição A: OK"` ou `"Ativar Partição A: Senha incorreta"`) |
 | `sensor` | Últimos eventos | diagnóstico — só nos modelos/firmwares com acesso ao comando `0x5C` para eventos (ver seção "Nomes de zona e log de eventos" abaixo); fica indisponível nos demais. Estado = evento mais recente; atributo `eventos` = lista dos `EVENT_ENTITY_RECENT_COUNT` (24) mais recentes. Atualizada pelo serviço `intelbras_alarm.read_events`, não pelo polling normal |
+| `sensor` | Rede (diagnóstico) / Módulo celular (diagnóstico) | **só na AMT 2018 E SMART** — diagnóstico; tipo de conexão/status dos links/IP/MAC no primeiro, tipo de módulo/sinal/operadora/Chip ID/IMEI no segundo (nos atributos). Ver seção "AMT 2018 E Smart — dados adicionais". Não testado contra hardware real |
 | `button` | Pânico silencioso / audível / emergência médica / incêndio | comando `0x45` |
 | `button` | Anular zonas abertas / Anular zonas violadas / Anular zonas abertas ou violadas | comando `0x42`; preserva anulações já existentes em outras zonas; o terceiro botão une os dois conjuntos numa única operação (evita que uma anulação desfaça a outra, já que o comando é absoluto) |
 | `button` | Remover todas as anulações de zona | comando `0x42`; reativa **todas** as zonas de uma vez (não pede número de zona) |

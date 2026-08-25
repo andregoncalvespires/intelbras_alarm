@@ -398,4 +398,26 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
             attrs["tamper"] = status.zones_tamper[self._zone]
         if self._zone in status.zones_short_circuit:
             attrs["curto_circuito"] = status.zones_short_circuit[self._zone]
+
+        # AMT 2018 E SMART: atributos extras só disponíveis pra zonas
+        # 25-48 (a central trata 1-24 como sempre cabeadas) — ver
+        # protocol.parse_status_2018_esmart_extra, não validado contra
+        # hardware real. Mesmo critério acima: só inclui se a chave
+        # existir (resposta longa o bastante para alcançar o dado).
+        extra = self.coordinator.esmart_extra
+        if extra is not None:
+            if self._zone in extra.zones_wireless:
+                attrs["sem_fio"] = extra.zones_wireless[self._zone]
+            if self._zone in extra.zones_tamper_esmart:
+                attrs["tamper_esmart"] = extra.zones_tamper_esmart[self._zone]
+            if self._zone in extra.zones_short_circuit_esmart:
+                attrs["curto_circuito_esmart"] = extra.zones_short_circuit_esmart[self._zone]
+            if self._zone in extra.zones_battery_low_esmart:
+                attrs["bateria_baixa_esmart"] = extra.zones_battery_low_esmart[self._zone]
+            if self._zone in extra.zones_supervised:
+                attrs["supervisionada"] = extra.zones_supervised[self._zone]
+            if self._zone in extra.zones_supervision_failure:
+                attrs["falha_supervisao"] = extra.zones_supervision_failure[self._zone]
+            if self._zone in extra.zones_device_model:
+                attrs["modelo_dispositivo"] = extra.zones_device_model[self._zone]
         return attrs
