@@ -8,6 +8,29 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.0.3]
+
+### Corrigido
+- **Integração travava (entidades indisponíveis) ao recarregar ou ao
+  reconfigurar** (ex.: adicionar a senha de leitura de mensagens) — só
+  recuperava com um reinício completo do Home Assistant. Causa: o
+  fechamento da conexão TCP com a central (`writer.wait_closed()`, e o
+  equivalente no servidor Receptor IP) não tinha nenhum timeout de
+  proteção — se a central (dispositivo embarcado, pilha TCP simples)
+  não confirmasse o fechamento de forma limpa, a chamada podia travar
+  **indefinidamente**, impedindo o descarregamento da integração de
+  terminar. Corrigido com um timeout de 3s: se o fechamento não for
+  confirmado a tempo, a integração desiste de esperar e segue em
+  frente mesmo assim. **Confirmado pelo usuário**, reproduzindo os
+  dois cenários relatados antes da correção e validando que não
+  travam mais depois dela.
+
+### Documentação
+- README.md/README_DETALHADO.md: tabela de modelos/firmwares testados
+  reorganizada — a observação sobre o firmware 6.2 (AMT 4010 SMART)
+  virou nota de rodapé numerada, em vez de texto longo dentro da
+  célula da tabela.
+
 ## [2.0.2]
 
 Passou por 6 rodadas de pré-lançamento (v2.0.2-beta.1 a beta.6) antes de

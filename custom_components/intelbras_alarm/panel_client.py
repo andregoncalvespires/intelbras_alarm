@@ -79,11 +79,40 @@ class PanelClient:
     async def _close_locked(self) -> None:
         self._connected = False
         if self._writer is not None:
+            # CORREÇÃO (bug real, confirmado em produção): antes,
+            # `wait_closed()` não tinha nenhum timeout de proteção. A
+            # central é um dispositivo embarcado com pilha TCP simples —
+            # se ela não confirmar o fechamento da conexão de forma limpa
+            # (não manda o FIN/ACK esperado, por exemplo), essa chamada
+            # podia travar **indefinidamente**, sem nunca lançar exceção
+            # nem retornar. Como isso acontece dentro de
+            # `async_unload_entry()` (recarregar a integração, ou
+            # reconfigurar via opções — que dispara um recarregamento
+            # automático), uma trava aqui impedia o descarregamento de
+            # terminar, deixando as entidades indisponíveis até um
+            # reinício completo do Home Assistant (só isso mata a tarefa
+            # travada à força, no nível do processo). Confirmado pelo
+            # usuário: a correção resolveu os dois cenários relatados
+            # (recarregar a integração; reconfigurar pra adicionar a
+            # senha de leitura de mensagens).
+            #
+            # Corrigido dando um prazo curto pra esperar o fechamento
+            # "limpo" — se não vier a tempo, desiste de esperar e segue
+            # em frente mesmo assim (o objeto writer/reader já está sendo
+            # descartado de qualquer jeito; uma nova conexão será aberta
+            # do zero na próxima vez que for necessário).
             try:
                 self._writer.close()
-                await self._writer.wait_closed()
+                await asyncio.wait_for(self._writer.wait_closed(), timeout=3)
             except OSError:
                 pass
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Fechamento da conexão com a central não confirmado em 3s "
+                    "(central pode não responder ao fechamento de forma limpa) "
+                    "— seguindo em frente mesmo assim, sem travar o "
+                    "recarregamento da integração"
+                )
         self._reader = None
         self._writer = None
 

@@ -163,7 +163,19 @@ class ReceptorIPServer:
     async def async_stop(self) -> None:
         if self._server is not None:
             self._server.close()
-            await self._server.wait_closed()
+            # Mesma correção de PanelClient._close_locked() (ver comentário
+            # lá) — timeout de proteção pra não travar o descarregamento
+            # da integração indefinidamente se o fechamento não for
+            # confirmado a tempo (aqui é menos crítico, já que é um
+            # socket de escuta nosso, não uma conexão com a central, mas
+            # aplicado por precaução/consistência).
+            try:
+                await asyncio.wait_for(self._server.wait_closed(), timeout=3)
+            except asyncio.TimeoutError:
+                _LOGGER.warning(
+                    "Fechamento do servidor Receptor IP não confirmado em 3s "
+                    "— seguindo em frente mesmo assim"
+                )
             self._server = None
             _LOGGER.info("Receptor IP: servidor encerrado")
 
