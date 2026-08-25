@@ -193,7 +193,7 @@ pede a "Senha de Acesso Remoto" para essas duas funções:
 
 Fora dessa lista (por exemplo, uma AMT 1016 NET com firmware abaixo de
 4.10), a central usa um protocolo diferente e mais antigo — que, a
-partir da v2.0.2-beta.2, **também é suportado**, opcionalmente: informe
+partir da v2.0.2, **também é suportado**, opcionalmente: informe
 a "Senha de leitura de mensagens" (6 dígitos, a mesma "Senha Acesso
 Remoto" pedida pelo app AMT Mobile) na configuração da integração
 (deixe em branco se não quiser usar). Sem essa senha preenchida, o

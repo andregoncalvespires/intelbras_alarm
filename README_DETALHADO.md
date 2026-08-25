@@ -1378,7 +1378,7 @@ não estão batendo com o comportamento real da central.
   **não estão disponíveis em todos os modelos/firmwares suportados pelo
   resto da integração** — só nos listados na seção "Nomes de zona e log
   de eventos" acima. Fora dessa lista, ver a seção "Protocolo legado" a
-  seguir — desde a v2.0.2-beta.2, existe um caminho alternativo,
+  seguir — desde a v2.0.2, existe um caminho alternativo,
   opcional.
 
 ### Protocolo legado (`0xE7`) de nomes/eventos
