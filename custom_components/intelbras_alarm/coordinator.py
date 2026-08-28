@@ -15,6 +15,13 @@ from homeassistant.util import dt as dt_util
 from . import protocol_legacy_eeprom as legacy_eeprom
 from .const import (
     ACK_OK,
+    AMT8000_ALL_PARTITIONS,
+    AMT8000_EVENT_BUFFER_SIZE,
+    AMT8000_MODE_ARM,
+    AMT8000_MODE_DISARM,
+    AMT8000_MODE_STAY,
+    AMT8000_STATUS_MAX_LEN,
+    AMT_8000_MODEL_NAME,
     CMD_EEPROM_READ,
     CONF_ENABLED_ZONES,
     CONF_LEGACY_EEPROM_PASSWORD,
@@ -29,22 +36,29 @@ from .const import (
     EVENT_RECORD_LEN,
     FAMILY_2018,
     FAMILY_4010,
+    FAMILY_8000,
     FAMILY_MAX_ZONES,
     FAMILY_STATUS_CMD,
     FAMILY_STATUS_LEN,
     InvalidZoneSpec,
     MODEL_2018_SMART,
+    MODEL_AMT_8000,
     MODEL_STATUS_CMD_OVERRIDE,
     MODEL_STATUS_MIN_LEN_OVERRIDE,
     MODEL_TABLE,
     MODEL_UNKNOWN,
     PGM_ADDRESSES,
+    USER_NAME_RECORD_LEN,
+    USER_NAME_TABLE_CAPACITY,
+    VOLTAGE_OFFSETS,
     ZONE_NAME_BASE_ADDRESS,
     ZONE_NAME_MAX_READ,
     ZONE_NAME_RECORD_LEN,
     parse_zone_spec,
 )
 from .panel_client import PanelClient, PanelConnectionError
+from .panel_client_amt8000 import Amt8000AuthError, PanelConnectionErrorAmt8000
+from . import protocol_amt8000 as amt8000
 from .protocol import (
     ESmartExtraStatus,
     NackError,
@@ -59,6 +73,7 @@ from .protocol import (
     cmd_panic,
     cmd_pgm,
     cmd_siren,
+    decode_user_names,
     decode_zone_names,
     parse_event_record,
     parse_hex_bytes,
@@ -68,6 +83,11 @@ from .protocol import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Usado nos pontos que tratam falha de conexão de forma genérica,
+# independente da família — a AMT 8000 tem suas próprias exceções
+# (protocolo/cliente TCP totalmente separados, ver panel_client_amt8000.py).
+_ANY_PANEL_CONNECTION_ERROR = (PanelConnectionError, PanelConnectionErrorAmt8000, Amt8000AuthError)
 
 
 class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
@@ -100,6 +120,18 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             CONF_LEGACY_EEPROM_PASSWORD
         ) or None
         self.zone_names: dict[int, str] = {}
+        # Nomes de usuário, lidos junto com os de zona (mesma chamada,
+        # mesma condição de disponibilidade — ver async_refresh_zone_names).
+        # Usados para enriquecer as mensagens de evento do Receptor IP com
+        # o nome de quem armou/desarmou, em vez de só o número bruto (ver
+        # const.RECEPTOR_IP_EVENT_SUBJECT e on_receptor_event()).
+        self.user_names: dict[int, str] = {}
+        # Tensão da fonte/bateria (comando [1, 0x17] dentro do 0xE7,
+        # confirmado em hardware real — ver supports_voltage_reading e
+        # async_refresh_voltage()). None até a primeira leitura bem
+        # sucedida (ou pra sempre, se o modelo/senha não suportar).
+        self.tensao_fonte: float | None = None
+        self.tensao_bateria: float | None = None
         # Dados adicionais só existentes na resposta 0x5D (AMT 2018 E
         # SMART) — rede, celular, IMEI, atributos extras de zona (25-48).
         # None nos demais modelos; nunca fica None pra AMT 2018 E SMART
@@ -272,6 +304,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         identificação por senha de 6 dígitos), implementado
         separadamente em ``protocol_legacy_eeprom.py``.
         """
+        if self.family == FAMILY_8000:
+            # A AMT 8000 lê nomes/eventos por um comando próprio (ver
+            # protocol_amt8000.py), sem a complexidade de limiar de
+            # firmware do comando 0x5C legado — sempre disponível nesta
+            # família, independente de self.data já ter chegado ou não.
+            return True
         if self.data is None:
             return False
         if self.model_key not in EEPROM_EXTENDED_MIN_FIRMWARE:
@@ -301,6 +339,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         branco por padrão, funcionalidade desligada até o usuário optar
         por ativá-la.
 
+        Não se aplica à AMT 8000 automaticamente: como
+        ``supports_extended_eeprom`` já retorna ``True`` incondicionalmente
+        para ``FAMILY_8000`` (comando próprio, sem limiar de firmware),
+        a primeira condição abaixo já exclui essa família sem precisar
+        de checagem extra.
+
         Confirmado funcionando em hardware real (AMT 1016 NET, firmware
         3.1) — ver docstring de ``protocol_legacy_eeprom.py`` para os
         detalhes da validação.
@@ -308,6 +352,23 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if self.supports_extended_eeprom:
             return False
         return self._legacy_eeprom_password is not None
+
+    @property
+    def supports_voltage_reading(self) -> bool:
+        """Se a leitura periódica de tensão da fonte/bateria está disponível.
+
+        Diferente de ``supports_legacy_eeprom`` acima: este comando
+        específico (sub-comando ``[1, 0x17]`` dentro do ``0xE7``) foi
+        confirmado funcionando mesmo em modelos que usam ``0x5C`` para
+        nomes/eventos — testado pelo usuário numa AMT 4010 SMART
+        (firmware 5.2, onde ``supports_extended_eeprom`` já é ``True``,
+        e portanto ``supports_legacy_eeprom`` seria ``False``). A única
+        condição real é ter a senha de 6 dígitos configurada **e** a
+        família ter um offset confirmado (``const.VOLTAGE_OFFSETS`` —
+        hoje só família 2018 e 4010; não se aplica à ANM 24 Net nem à
+        AMT 8000, que usam protocolos totalmente diferentes).
+        """
+        return self._legacy_eeprom_password is not None and self.family in VOLTAGE_OFFSETS
 
     def zone_enabled_by_default(self, zone: int) -> bool:
         """Se a zona deve nascer habilitada no registro de entidades.
@@ -356,6 +417,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         rejeitar, ou ``PanelConnectionError`` se a conexão atual não
         estiver disponível.
         """
+        if self.family == FAMILY_8000:
+            await self._async_validate_password_amt8000(password)
+            return
         frame = _build_status_frame(password, self.family, self.model_key)
         response = await self.client.send_command(frame, context="validar nova senha")
         # Uma resposta de status completa (43 ou 54 bytes, conforme a
@@ -368,6 +432,36 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if len(response.content) in (43, 54):
             return
         raise_for_ack(response)
+
+    async def _async_validate_password_amt8000(self, password: str) -> None:
+        """Testa uma senha candidata para a AMT 8000.
+
+        Diferente do ISECMobile (senha embutida em cada frame), a AMT
+        8000 autentica a **conexão inteira** uma única vez (ver
+        protocol_amt8000.py) — não dá pra "testar" uma senha nova sem
+        reautenticar. Estratégia: desconecta a sessão atual e tenta
+        reconectar/reautenticar com a senha candidata; se falhar,
+        restaura a senha original e reconecta antes de propagar o erro,
+        para não deixar a integração sem conexão só por causa de um
+        teste de senha malsucedido.
+
+        ⚠️ Ainda não confirmado se a central aceita uma segunda conexão
+        simultânea de outro cliente enquanto esta reconecta — se isso se
+        mostrar um problema em campo, esta função pode precisar de
+        ajuste (ver mesma ressalva já documentada para o ISECMobile).
+        """
+        original_password = self.client._password  # noqa: SLF001 — ver docstring
+        try:
+            await self.client.disconnect()
+            self.client._password = password  # noqa: SLF001
+            await self.client.connect()
+        except Amt8000AuthError:
+            self.client._password = original_password  # noqa: SLF001
+            try:
+                await self.client.connect()
+            except _ANY_PANEL_CONNECTION_ERROR:
+                pass
+            raise
 
     def password_for_partition(self, partition: str | None) -> str:
         """Senha a usar para armar/desarmar uma partição específica.
@@ -404,6 +498,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if self._disabled_logged:
             _LOGGER.info('Switch "Conexão com a central" reativado — retomando consultas')
             self._disabled_logged = False
+
+        if self.family == FAMILY_8000:
+            return await self._async_update_data_amt8000()
 
         try:
             response = await self.client.send_command(
@@ -505,6 +602,78 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
         return status
 
+    async def _async_update_data_amt8000(self) -> PanelStatus:
+        """Consulta de status para a família AMT 8000 (protocolo próprio).
+
+        EXPERIMENTAL — ver protocol_amt8000.py e README_DETALHADO.md.
+        Reaproveita a mesma lógica de tolerância a falha isolada
+        (`_handle_poll_failure`) e a mesma dataclass `PanelStatus` das
+        demais famílias, para que as entidades (sensor/binary_sensor/
+        switch) funcionem sem qualquer alteração — ver
+        `protocol_amt8000.parse_status`.
+        """
+        try:
+            response = await self.client.send_command(
+                amt8000.cmd_status(), context="consulta de status (AMT 8000)"
+            )
+            if not response.valid_checksum:
+                raise UpdateFailed("Checksum inválido na resposta de status (AMT 8000)")
+
+            # Equiparação com a mesma proteção aplicada às demais famílias
+            # (ver _async_update_data acima) — com um critério ainda um
+            # pouco mais cauteloso que FAMILY_STATUS_LEN: AMT8000_STATUS_MAX_LEN
+            # (143 bytes, só o conteúdo — response.content já vem sem
+            # cabeçalho/opcode/checksum) agora é um valor CONFIRMADO em
+            # hardware real (projeto de terceiros
+            # fdaneluzzi/homeassistant-amt8000, cruzado com nossa análise),
+            # não mais uma estimativa — mas os OFFSETS dos campos dentro
+            # desse conteúdo continuam sem validação própria (protocolo
+            # ainda experimental). Por isso mantemos a margem de 50%, em
+            # vez de comparação exata: pega qualquer truncamento claro sem
+            # arriscar rejeitar uma resposta válida por uma diferença
+            # pequena entre modelos/firmwares que ainda não vimos.
+            if len(response.content) < (AMT8000_STATUS_MAX_LEN // 2):
+                raise UpdateFailed(
+                    f"Resposta de status da AMT 8000 muito curta: recebidos "
+                    f"{len(response.content)} bytes, esperado {AMT8000_STATUS_MAX_LEN} "
+                    f"(conteúdo, sem framing). Conteúdo recebido: "
+                    f"{response.content.hex(' ').upper()}"
+                )
+
+            status = amt8000.parse_status(response.content)
+        except (*_ANY_PANEL_CONNECTION_ERROR, UpdateFailed, IndexError, ValueError) as err:
+            self._handle_poll_failure(err)
+            if self.data is not None:
+                return self.data
+            raise UpdateFailed(str(err)) from err
+
+        if self._poll_failure_logged:
+            elapsed = (
+                time.monotonic() - self._last_poll_success_monotonic
+                if self._last_poll_success_monotonic is not None
+                else 0.0
+            )
+            _LOGGER.warning(
+                "Comunicação com a central AMT 8000 reestabelecida (ficou sem "
+                "responder por cerca de %.1fs)",
+                elapsed,
+            )
+            self._poll_failure_logged = False
+        self._last_poll_success_monotonic = time.monotonic()
+
+        _LOGGER.debug(
+            "AMT 8000 status recebido: conteúdo=%s | activated=%s partitions_armed=%s "
+            "zone_triggered=%s siren_on=%s problem=%s",
+            response.content.hex(" ").upper(),
+            status.activated,
+            status.partitions_armed,
+            status.zone_triggered,
+            status.siren_on,
+            status.problem,
+        )
+        self.last_status_raw = response.content.hex(" ").upper()
+        return status
+
     def _handle_poll_failure(self, err: Exception) -> None:
         """Decide se uma falha de CONSULTA DE STATUS é tolerada ou definitiva.
 
@@ -577,6 +746,16 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # Comandos de alto nível usados pelas entidades
     # ------------------------------------------------------------------
     async def async_arm(self, partition: str | None, stay: bool, password: str | None = None) -> None:
+        if self.family == FAMILY_8000:
+            mode = AMT8000_MODE_STAY if stay else AMT8000_MODE_ARM
+            partition_num = int(partition) if partition is not None else AMT8000_ALL_PARTITIONS
+            frame = amt8000.cmd_arm_disarm(partition_num, mode)
+            label = f"Ativar {_partition_label(partition)}" + (" (Stay)" if stay else "")
+            await self._send_and_check_amt8000(frame, label)
+            key = partition or "CENTRAL"
+            self.armed_home_mode[key] = stay
+            await self.async_request_refresh()
+            return
         code = None if partition is None else _partition_code(partition)
         frame = cmd_arm(password or self._password, code, stay=stay)
         label = f"Ativar {_partition_label(partition)}" + (" (Stay)" if stay else "")
@@ -586,6 +765,15 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         await self.async_request_refresh()
 
     async def async_disarm(self, partition: str | None, password: str | None = None) -> None:
+        if self.family == FAMILY_8000:
+            partition_num = int(partition) if partition is not None else AMT8000_ALL_PARTITIONS
+            frame = amt8000.cmd_arm_disarm(partition_num, AMT8000_MODE_DISARM)
+            label = f"Desativar {_partition_label(partition)}"
+            await self._send_and_check_amt8000(frame, label)
+            key = partition or "CENTRAL"
+            self.armed_home_mode[key] = False
+            await self.async_request_refresh()
+            return
         code = None if partition is None else _partition_code(partition)
         frame = cmd_disarm(password or self._password, code)
         label = f"Desativar {_partition_label(partition)}"
@@ -595,6 +783,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         await self.async_request_refresh()
 
     async def async_set_pgm(self, address: int, turn_on: bool, pgm: int | None = None) -> None:
+        if self.family == FAMILY_8000:
+            if pgm is None:
+                raise HomeAssistantError("PGM não informada (interno) — AMT 8000 endereça PGM por número")
+            frame = amt8000.cmd_pgm(pgm, turn_on)
+            label = f"{'Ligar' if turn_on else 'Desligar'} PGM {pgm}"
+            await self._send_and_check_amt8000(frame, label)
+            await self.async_request_refresh()
+            return
         frame = cmd_pgm(self._password, address, turn_on)
         pgm_label = f"PGM {pgm}" if pgm is not None else f"PGM (endereço 0x{address:02X})"
         label = f"{'Ligar' if turn_on else 'Desligar'} {pgm_label}"
@@ -602,12 +798,27 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         await self.async_request_refresh()
 
     async def async_set_siren(self, turn_on: bool) -> None:
+        if self.family == FAMILY_8000:
+            # Nenhum comando dedicado de liga/desliga sirene foi
+            # encontrado no app oficial para a AMT 8000 (só o estado da
+            # sirene é reportado no status) — ver README_DETALHADO.md.
+            # A entidade switch.py não cria este switch para esta
+            # família (ver switch.py), então este ramo não deveria ser
+            # alcançável na prática; existe só como salvaguarda.
+            raise HomeAssistantError(
+                "Controle direto de sirene ainda não é suportado na AMT 8000 nesta integração"
+            )
         frame = cmd_siren(self._password, turn_on)
         label = "Ligar sirene" if turn_on else "Desligar sirene"
         await self._send_and_check(frame, label)
         await self.async_request_refresh()
 
     async def async_panic(self, kind: int) -> None:
+        if self.family == FAMILY_8000:
+            frame = amt8000.cmd_panic(kind)
+            label = f"Pânico ({_PANIC_LABELS.get(kind, f'0x{kind:02X}')})"
+            await self._send_and_check_amt8000(frame, label)
+            return
         frame = cmd_panic(self._password, kind)
         label = f"Pânico ({_PANIC_LABELS.get(kind, f'0x{kind:02X}')})"
         await self._send_and_check(frame, label)
@@ -615,13 +826,28 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     async def async_bypass_zones(self, zones_to_bypass: set[int], *, replace: bool = False) -> None:
         """Anula (bypass) as zonas indicadas.
 
-        O comando 0x42 é absoluto (define o estado de anulação de todas as
-        64 zonas do protocolo de uma vez). Por padrão (``replace=False``),
-        as zonas já anuladas na última leitura de status são preservadas —
-        o comando enviado é a união entre o que já estava anulado e
-        ``zones_to_bypass``. Use ``replace=True`` para enviar exatamente o
-        conjunto informado (desanulando qualquer zona fora dele).
+        Na AMT 8000 (``self.family == FAMILY_8000``), o comando é
+        individual por zona (ver ``protocol_amt8000.cmd_bypass``) — cada
+        zona do conjunto é anulada com uma chamada própria, sem o
+        conceito de "comando absoluto sobre as 64 zonas" das demais
+        famílias; ``replace`` não se aplica nesse caso (não há zonas
+        "fora do conjunto" para desanular implicitamente).
+
+        Nas demais famílias, o comando 0x42 é absoluto (define o estado
+        de anulação de todas as 64 zonas do protocolo de uma vez). Por
+        padrão (``replace=False``), as zonas já anuladas na última
+        leitura de status são preservadas — o comando enviado é a união
+        entre o que já estava anulado e ``zones_to_bypass``. Use
+        ``replace=True`` para enviar exatamente o conjunto informado
+        (desanulando qualquer zona fora dele).
         """
+        if self.family == FAMILY_8000:
+            for zone in sorted(zones_to_bypass):
+                frame = amt8000.cmd_bypass(zone, True)
+                await self._send_and_check_amt8000(frame, f"Anular zona {zone}")
+            await self.async_request_refresh()
+            return
+
         target = set(zones_to_bypass)
         if not replace and self.data is not None:
             target |= {zone for zone, bypassed in self.data.zones_bypassed.items() if bypassed}
@@ -676,6 +902,11 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
     async def async_clear_bypass(self) -> None:
         """Remove todas as anulações, reativando todas as zonas."""
+        if self.family == FAMILY_8000:
+            if self.data is not None:
+                bypassed = {z for z, b in self.data.zones_bypassed.items() if b}
+                await self.async_unbypass_zones(bypassed)
+            return
         frame = cmd_bypass(self._password, {})
         await self._send_and_check(frame, "Remover todas as anulações de zona")
         await self.async_request_refresh()
@@ -688,8 +919,18 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         múltiplas zonas na mesma chamada pelo mesmo motivo que
         ``async_bypass_zones`` aceita um conjunto: o comando 0x42 é
         absoluto, então reativar zona a zona em chamadas separadas
-        desfaria anulações de outras zonas no meio do caminho.
+        desfaria anulações de outras zonas no meio do caminho. Na AMT
+        8000, o comando já é individual por zona (ver
+        ``async_bypass_zones``), então este loop é natural, não uma
+        adaptação.
         """
+        if self.family == FAMILY_8000:
+            for zone in sorted(zones):
+                frame = amt8000.cmd_bypass(zone, False)
+                await self._send_and_check_amt8000(frame, f"Reativar zona {zone}")
+            await self.async_request_refresh()
+            return
+
         current: set[int] = set()
         if self.data is not None:
             current = {z for z, bypassed in self.data.zones_bypassed.items() if bypassed}
@@ -857,6 +1098,48 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # genérica não tratada.
             raise HomeAssistantError(err.message) from err
 
+    async def _send_and_check_amt8000(self, frame: bytes, action_label: str | None = None) -> None:
+        """Equivalente a ``_send_and_check`` para a AMT 8000.
+
+        ⚠️ IMPORTANTE (limitação conhecida, ver README_DETALHADO.md): ao
+        contrário do protocolo ISECMobile, ainda não temos um esquema de
+        ACK/NACK confirmado por captura própria para os comandos de
+        ação da AMT 8000 (arme, desarme, bypass, PGM, pânico) — só o
+        opcode de falha de autenticação (``0xF0FD``) foi identificado com
+        confiança alta. Por isso, esta função trata "não levantou erro de
+        conexão" como sucesso, sem validar o conteúdo da resposta linha a
+        linha — se a central devolver algum código de rejeição específico
+        (ex.: senha incorreta num comando isolado, partição inválida),
+        isso ainda não é detectado aqui e precisa ser observado no valor
+        bruto de ``last_command_response_hex`` durante os testes de
+        campo, até este ponto ser confirmado e o tratamento refinado.
+        """
+        if action_label:
+            self.last_command_result = f"{action_label}..."
+            self.last_command_action = action_label
+            self.last_command_frame_hex = frame.hex(" ").upper()
+            self.async_update_listeners()
+        try:
+            response = await self.client.send_command(frame, context=action_label)
+        except _ANY_PANEL_CONNECTION_ERROR as err:
+            self.last_command_result = f"{action_label + ': ' if action_label else ''}{err}"
+            if action_label:
+                self.last_command_response_hex = None
+            self.async_update_listeners()
+            _LOGGER.error("Comando AMT 8000 falhou (erro de conexão): ação=%s erro=%s", action_label, err)
+            raise UpdateFailed(str(err)) from err
+        result_desc = f"opcode=0x{response.opcode[0]:02X}{response.opcode[1]:02X}"
+        self.last_command_result = f"{action_label + ': ' if action_label else ''}{result_desc}"
+        if action_label:
+            self.last_command_response_hex = response.content.hex(" ").upper()
+        self.async_update_listeners()
+        _LOGGER.debug(
+            "AMT 8000 resposta recebida: ação=%s resultado=%s resposta_bruta=%s",
+            action_label or "(sem rótulo)",
+            result_desc,
+            response.content.hex(" ").upper(),
+        )
+
     # ------------------------------------------------------------------
     # Protocolo legado (0xE7 + identificação) — nomes de zona/usuário e
     # eventos para modelos/firmwares fora do supports_extended_eeprom,
@@ -927,6 +1210,96 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
         return bytes(dados)
 
+    async def async_refresh_voltage(self) -> None:
+        """Lê a tensão da fonte/bateria (comando ``[1, 0x17]`` dentro do
+        ``0xE7`` — ver ``supports_voltage_reading``).
+
+        Chamado **periodicamente a cada 5 minutos** (ver
+        ``__init__.py``, ``async_track_time_interval``) — deliberadamente
+        **fora** do polling rápido de status normal (a cada poucos
+        segundos): esta leitura exige uma autenticação própria a cada
+        vez (o protocolo ``0xE7`` não mantém "sessão" entre comandos),
+        o que seria um overhead desnecessário se repetido no mesmo ritmo
+        do status. Reaproveita a mesma conexão persistente já usada por
+        tudo mais — a central só aceita 1 cliente por vez, então nunca
+        abrimos uma conexão separada para isto.
+
+        Concorrência: a conexão persistente já serializa todo comando via
+        lock (``panel_client.PanelClient._lock``) — mesmo mecanismo que já
+        protege a leitura de nomes/eventos legada rodando lado a lado com
+        o polling rápido. Uma consulta de tensão (autenticação + leitura,
+        2 idas-e-voltas) pode atrasar em alguns milissegundos o ciclo de
+        status que estiver em andamento no momento exato — no pior caso,
+        1 em ~1200 ciclos a cada 5 minutos (polling padrão de 0,25s),
+        sem risco de corrupção de frame.
+
+        Falhas são tratadas como *best-effort*: registradas em log e
+        ignoradas, sem levantar exceção — nunca deve derrubar o polling
+        de status principal. ``tensao_fonte``/``tensao_bateria`` ficam
+        com o último valor válido (ou ``None``, se nunca leu com sucesso)
+        até a próxima tentativa, 5 minutos depois.
+        """
+        if not self.supports_voltage_reading:
+            return
+        if not self.client.enabled:
+            # Central desligada pelo switch "Conexão com a central" —
+            # sai em silêncio, sem tentar nada e sem logar aviso (evita
+            # um WARNING a cada 5 minutos enquanto o usuário mantiver a
+            # conexão desligada de propósito). Mesmo espírito de
+            # pause_polling()/resume_polling() já usado no polling
+            # principal de status.
+            return
+        try:
+            frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
+            resposta_auth = await self.client.send_command(
+                frame_auth, context="identificação (consulta de tensão)"
+            )
+            if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+                _LOGGER.warning(
+                    "Consulta de tensão: falha na identificação com a senha de leitura "
+                    "configurada — tentando de novo em 5 minutos"
+                )
+                return
+            await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+
+            frame = legacy_eeprom.montar_comando_status_tensao()
+            resposta = await self.client.send_command(frame, context="consulta de tensão")
+            # Pausa de acomodação (heurística, não uma medição exata):
+            # timeouts reais na consulta de status normal foram
+            # observados sistematicamente coincidindo com múltiplos de 5
+            # minutos (ciclo da tensão) — indício de que a central
+            # precisa de um instante para "se recompor" depois dessa
+            # troca autenticada via 0xE7, antes de responder prontamente
+            # ao próximo 0x5A/0x5B do polling rápido. Aplicada aqui,
+            # cobrindo qualquer desfecho a partir deste ponto (sucesso
+            # ou falha de checksum/parse) — o exchange completo com a
+            # central já aconteceu de qualquer forma.
+            await asyncio.sleep(1.0)
+            if not resposta.valid_checksum:
+                _LOGGER.warning("Consulta de tensão: checksum inválido na resposta")
+                return
+
+            resultado = legacy_eeprom.parse_tensao(resposta.content, self.family)
+            if resultado is None:
+                _LOGGER.debug(
+                    "Consulta de tensão: família %s sem offset confirmado, ou resposta "
+                    "curta demais (%d bytes de conteúdo)",
+                    self.family,
+                    len(resposta.content),
+                )
+                return
+
+            self.tensao_fonte, self.tensao_bateria = resultado
+            _LOGGER.debug(
+                "Tensão lida: fonte=%.2fV bateria=%.2fV", self.tensao_fonte, self.tensao_bateria
+            )
+            self.async_update_listeners()
+        except PanelConnectionError as err:
+            _LOGGER.warning(
+                "Consulta de tensão: falha de conexão (%s) — tentando de novo em 5 minutos",
+                err,
+            )
+
     async def _async_refresh_zone_names_legacy(self) -> dict[int, str]:
         paginas_info = list(
             legacy_eeprom.paginas(
@@ -939,6 +1312,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         dados = await self._async_legacy_eeprom_session(paginas_info)
         resultado = legacy_eeprom.parse_nomes(dados)
         self.zone_names = resultado.zonas
+        # O protocolo legado já extrai nomes de usuário na mesma leitura
+        # (mesma área de EEPROM) — antes disso ficava descartado.
+        self.user_names = resultado.usuarios
         self.async_update_listeners()
         return resultado.zonas
 
@@ -953,6 +1329,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         )
         dados = await self._async_legacy_eeprom_session(paginas_info)
         registros = legacy_eeprom.parse_eventos(dados)
+        for evento in registros:
+            evento["nome"] = self._resolver_nome_por_codigo(
+                evento.get("codigo_app"), evento["zona_usuario"]
+            )
         registros.sort(key=lambda e: e["data_hora"], reverse=True)
         self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
         self.async_update_listeners()
@@ -967,6 +1347,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             return await self._async_refresh_zone_names_legacy()
         if not self.supports_extended_eeprom:
             return {}
+
+        if self.family == FAMILY_8000:
+            return await self._async_refresh_zone_names_amt8000()
 
         names: dict[int, str] = {}
         zone = 1
@@ -985,6 +1368,81 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             data = response.content[1:]
             names.update(decode_zone_names(data, zone))
             zone += batch
+
+        self.zone_names = names
+
+        # Nomes de usuário, logo em seguida — mesmo comando 0x5C, começando
+        # bem no endereço seguinte ao do último slot de zona possível deste
+        # modelo (self.max_zones já reflete a família/modelo detectado).
+        # Falha aqui NÃO interrompe a atualização de zone_names acima —
+        # tratada como best-effort (fica com o que já tinha, ou vazio).
+        try:
+            user_names: dict[int, str] = {}
+            user = 1
+            # CORREÇÃO (bug real, relatado pelo usuário): o primeiro slot
+            # logo após as zonas não é "usuário 1" — é o usuário "Master"
+            # da central, um registro à parte, sempre presente antes dos
+            # usuários numerados (confirmado numa leitura real de EEPROM,
+            # onde esse slot continha literalmente o texto "Usuario
+            # Master"). Sem pular esse slot, TODA a numeração ficava
+            # deslocada por um — pedir o nome do usuário 10 da central
+            # devolvia o que estava no slot 9 ("Usuário 09"). +16 pula
+            # exatamente 1 registro (o do Master); capacidade reduzida
+            # em 1 pelo mesmo motivo (um dos slots do bloco é do Master,
+            # não de um usuário numerado).
+            user_base_address = (
+                ZONE_NAME_BASE_ADDRESS + self.max_zones * ZONE_NAME_RECORD_LEN + USER_NAME_RECORD_LEN
+            )
+            capacidade_usuarios_numerados = USER_NAME_TABLE_CAPACITY - 1
+            while user <= capacidade_usuarios_numerados:
+                batch = min(12, capacidade_usuarios_numerados - user + 1)
+                length = batch * USER_NAME_RECORD_LEN
+                address = user_base_address + (user - 1) * USER_NAME_RECORD_LEN
+                frame = cmd_eeprom_read(self._password, address, length)
+                response = await self.client.send_command(frame, context=f"ler nomes de usuário {user}")
+                if not response.content or response.content[0] in (0xE0, 0xE1, 0xE2, 0xE5):
+                    raise UpdateFailed("A central recusou a leitura de nomes de usuário")
+                data = response.content[1:]
+                user_names.update(decode_user_names(data, user))
+                user += batch
+            self.user_names = user_names
+        except (PanelConnectionError, UpdateFailed) as err:
+            _LOGGER.warning(
+                "Não foi possível ler nomes de usuário (nomes de zona já foram "
+                "atualizados normalmente) — mensagens de evento vão mostrar só o "
+                "número: %s",
+                err,
+            )
+
+        self.async_update_listeners()
+        return names
+
+    async def _async_refresh_zone_names_amt8000(self) -> dict[int, str]:
+        """Lê os nomes de zona da AMT 8000, um índice por vez.
+
+        Decisão de arquitetura registrada no histórico do projeto: 1
+        requisição por zona (não em lote de 10 como o app oficial),
+        priorizando isolamento de erro e simplicidade do parser nesta
+        primeira versão — só roda na configuração inicial ou por pedido
+        manual (botão "Sincronizar nomes de zona"), nunca no polling
+        normal. ⚠️ O formato exato da resposta (quantos bytes, padding)
+        ainda não foi confirmado por captura própria — o decode abaixo é
+        uma melhor tentativa (ASCII, removendo bytes nulos/não
+        imprimíveis) e pode precisar de ajuste. Nomes de usuário (ver
+        user_names) ainda não são lidos para esta família — só zona.
+        """
+        names: dict[int, str] = {}
+        for zone in range(1, self.native_zone_count + 1):
+            frame = amt8000.cmd_sync_names("zona", [zone])
+            try:
+                response = await self.client.send_command(frame, context=f"nome da zona {zone} (AMT 8000)")
+            except _ANY_PANEL_CONNECTION_ERROR as err:
+                _LOGGER.warning("AMT 8000: falha ao ler nome da zona %d: %s", zone, err)
+                continue
+            texto = response.content.decode("ascii", errors="ignore")
+            texto = "".join(ch for ch in texto if ch.isprintable()).strip()
+            if texto:
+                names[zone] = texto
 
         self.zone_names = names
         self.async_update_listeners()
@@ -1019,6 +1477,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 "nesta integração (ver README, seção de modelos suportados)"
             )
 
+        if self.family == FAMILY_8000:
+            return await self._async_read_events_amt8000()
+
         registros: list[dict] = []
         endereco = EVENT_LOG_BASE_ADDRESS
         fim = EVENT_LOG_BASE_ADDRESS + EVENT_LOG_TOTAL_BYTES
@@ -1041,6 +1502,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     break
                 evento = parse_event_record(bytes(registro))
                 if evento is not None:
+                    evento["nome"] = self._resolver_nome_por_codigo(
+                        evento.get("codigo_app"), evento["zona_usuario"]
+                    )
                     registros.append(evento)
             endereco += tamanho
 
@@ -1049,6 +1513,71 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
         self.async_update_listeners()
         return registros
+
+    async def _async_read_events_amt8000(self) -> list[dict]:
+        """Lê o log de eventos da AMT 8000 (buffer circular, até
+        ``AMT8000_EVENT_BUFFER_SIZE`` posições).
+
+        ⚠️ Lê **um índice por vez** nesta primeira versão (não em lote de
+        16 como o app oficial) — o formato de uma resposta com múltiplos
+        registros concatenados ainda não foi confirmado por captura
+        própria, então evitamos adivinhar os limites de cada registro
+        dentro de uma resposta em lote. Isso torna a leitura completa
+        (até 512 posições) mais lenta que nas demais famílias; como é
+        uma operação sob demanda (serviço `read_events`), não afeta o
+        polling normal. Cada índice vazio/não inicializado do buffer
+        circular é descartado silenciosamente (mesmo comportamento das
+        demais famílias — ver `protocol.parse_event_record`).
+        """
+        registros: list[dict] = []
+        for idx in range(AMT8000_EVENT_BUFFER_SIZE):
+            frame = amt8000.cmd_read_events([idx])
+            try:
+                response = await self.client.send_command(frame, context=f"evento {idx} (AMT 8000)")
+            except _ANY_PANEL_CONNECTION_ERROR as err:
+                raise UpdateFailed(str(err)) from err
+            evento = amt8000.parse_event_record(list(response.content))
+            if evento is None:
+                continue
+            codigo_raw = evento["codigo_raw"]
+            descricao = RECEPTOR_IP_EVENT_TABLE.get(codigo_raw)
+            evento["codigo_app"] = codigo_raw if descricao else None
+            evento["descricao"] = descricao or "Código não mapeado (ver codigo_raw)"
+            evento["nome"] = self._resolver_nome_por_codigo(evento["codigo_app"], evento["zona_usuario"])
+            registros.append(evento)
+
+        registros.sort(key=lambda e: e["data_hora"], reverse=True)
+        self.recent_events = registros[:EVENT_ENTITY_RECENT_COUNT]
+        self.async_update_listeners()
+        return registros
+
+    async def async_request_event_photo(self, photo_index: bytes) -> bytes | None:
+        """Tenta buscar a foto de um evento (AMT 8000, sensores com câmera).
+
+        ⚠️ INCOMPLETO/EXPERIMENTAL: o LEIA_ME oficial descreve o fluxo
+        completo como autenticar → ``0x0BB0`` → ler MÚLTIPLOS fragmentos
+        → ``0xF0F1`` (desconectar), com a foto em JPG ~320x200 dividida
+        em pedaços de ~8KB cada, e um atraso de até 15s antes da foto
+        ficar disponível na central (erro ``0xF0FD``/``0x28`` enquanto
+        isso). Esta implementação faz só UMA tentativa de leitura de UM
+        fragmento — não reconstrói uma foto completa a partir de vários
+        fragmentos, nem trata o atraso/erro "ainda gravando" documentado.
+        Serve como ponto de partida para completar quando houver uma
+        central real disponível para captura de tráfego. Devolve
+        ``None`` em qualquer falha ou resposta vazia, para que
+        ``camera.py`` trate como "sem imagem disponível" (nunca levanta
+        exceção).
+        """
+        try:
+            response = await self.client.send_command(
+                amt8000.cmd_photo_request(photo_index), context="solicitar foto (AMT 8000)"
+            )
+        except _ANY_PANEL_CONNECTION_ERROR as err:
+            _LOGGER.debug("AMT 8000: falha ao solicitar foto: %s", err)
+            return None
+        if not response.content:
+            return None
+        return bytes(response.content)
 
     # ------------------------------------------------------------------
     # Receptor IP (eventos empurrados pela própria central, em tempo
@@ -1067,7 +1596,43 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # ``device_class: timestamp``, que exige isso do Home Assistant —
     # ele mesmo converte para o fuso local na exibição.
     # ------------------------------------------------------------------
+    def _resolver_nome_por_codigo(self, codigo: str | None, zona_usuario: int) -> str | None:
+        """Resolve o nome (zona ou usuário) para um ``zona_usuario``, dado
+        o código de evento (4 dígitos) — mesma tabela de classificação
+        (``const.RECEPTOR_IP_EVENT_SUBJECT``) usada tanto pelo Receptor
+        IP quanto pela leitura de eventos via EEPROM (``async_read_events``),
+        já que os dois usam o mesmo formato de código de 4 dígitos e o
+        mesmo significado de "zona_usuario" por tipo de evento.
+
+        Devolve ``None`` quando o código não representa nem zona nem
+        usuário (a maioria — falhas de rede/bateria/comunicação etc.) ou
+        quando não temos esse nome carregado (``zone_names``/``user_names``
+        vazios ou sem esse índice específico) — nesses casos quem exibe o
+        evento mostra só o número, como já acontecia antes desta função
+        existir.
+        """
+        from .const import RECEPTOR_IP_EVENT_SUBJECT
+
+        assunto = RECEPTOR_IP_EVENT_SUBJECT.get(codigo or "")
+        if assunto == "zona":
+            return self.zone_names.get(zona_usuario)
+        if assunto == "usuario":
+            return self.user_names.get(zona_usuario)
+        return None
+
     def on_receptor_event(self, evento: dict) -> None:
+        # Enriquece com o nome da zona/usuário, quando o código do evento é
+        # de um tipo que sabemos que carrega um desses dois no campo bruto
+        # "zona_usuario" — ver _resolver_nome_por_codigo().
+        nome = self._resolver_nome_por_codigo(evento.get("codigo"), evento["zona_usuario"])
+        evento["nome"] = nome
+        _LOGGER.debug(
+            "Receptor IP: evento enriquecido — código=%s zona_usuario=%s -> nome=%r",
+            evento.get("codigo"),
+            evento.get("zona_usuario"),
+            nome,
+        )
+
         self.receptor_last_event = evento
         self.receptor_last_heartbeat = dt_util.utcnow()
         self.async_update_listeners()
@@ -1173,5 +1738,34 @@ async def async_detect_model(host: str, port: int, password: str) -> tuple[str, 
             if status3.model_key != MODEL_UNKNOWN:
                 return status3.model_key, status3.model_name, FAMILY_2018
         return status.model_key, status.model_name, FAMILY_2018
+    finally:
+        await client.disconnect()
+
+
+async def async_detect_amt8000(host: str, port: int, password: str) -> tuple[str, str, str]:
+    """"Detecta" a AMT 8000 — na prática, apenas confirma que a autenticação
+    de sessão (``0xF0F0``) é aceita nesse host/porta/senha.
+
+    Diferente de ``async_detect_model`` (que sonda automaticamente entre
+    as famílias 2018/4010 por tentativa e erro), a AMT 8000 usa um
+    protocolo de transporte totalmente diferente — não haveria uma forma
+    segura de "tentar" esse protocolo silenciosamente durante a
+    detecção automática das outras famílias sem risco de confundir o
+    fluxo de detecção existente (já validado em produção para os 5
+    modelos suportados). Por isso, o config_flow pede explicitamente
+    para o usuário marcar "AMT 8000" em vez de incluir esta família na
+    sondagem automática — ver config_flow.py.
+    """
+    from .panel_client_amt8000 import Amt8000AuthError, PanelClientAmt8000, PanelConnectionErrorAmt8000
+
+    client = PanelClientAmt8000(host, port, password, timeout=DEFAULT_REQUEST_TIMEOUT)
+    try:
+        try:
+            await client.connect()
+        except PanelConnectionErrorAmt8000 as err:
+            raise UpdateFailed(str(err)) from err
+        except Amt8000AuthError as err:
+            raise NackError(0xE1) from err  # reaproveita "Senha incorreta" na UI
+        return MODEL_AMT_8000, AMT_8000_MODEL_NAME, FAMILY_8000
     finally:
         await client.disconnect()

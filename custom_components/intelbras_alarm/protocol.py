@@ -362,6 +362,12 @@ class PanelStatus:
     zones_short_circuit: dict[int, bool]  # mesmo alcance de zonas_tamper
     pgm_expander_problem: dict[int, bool]  # {1..4: bool} — só 4010, vazio na 2018/1016
     zone_expander_problem: dict[int, bool]  # {1..6: bool} — só 4010, vazio na 2018/1016
+    # Campo adicionado para a AMT 8000 (ver protocol_amt8000.py): falha de
+    # comunicação por zona sem fio (RF). Fica sempre vazio {} nas famílias
+    # 2018/4010, que não têm esse dado — dataclass reaproveitada tal como
+    # está entre as três famílias (evita duplicar praticamente todas as
+    # entidades sensor/binary_sensor entre elas).
+    zones_comm_failure: dict[int, bool] = field(default_factory=dict)
 
 
 def parse_status_2018(content: bytes) -> PanelStatus:
@@ -855,6 +861,33 @@ def decode_zone_names(eeprom_data: bytes, zone_offset: int) -> dict[int, str]:
             name = ""
         zone = zone_offset + (i // ZONE_NAME_RECORD_LEN)
         names[zone] = name if (name and not _is_uninitialized_pattern(raw)) else f"Zona {zone:02d}"
+    return names
+
+
+def decode_user_names(eeprom_data: bytes, user_offset: int) -> dict[int, str]:
+    """Decodifica nomes de usuário — mesmo formato de registro de
+    ``decode_zone_names`` (16 bytes ASCII terminados em NUL), mas sem
+    rótulo de reposição: usuário sem nome configurado (ou com o padrão
+    de fábrica não programado) simplesmente não entra no dict, em vez
+    de ganhar um nome genérico tipo "Usuário 05" — mesmo critério já
+    usado por ``protocol_legacy_eeprom.parse_nomes()`` para usuários
+    (diferente do critério para zonas, onde um rótulo genérico ajuda a
+    identificar fisicamente qual zona é qual mesmo sem nome).
+    """
+    from .const import USER_NAME_RECORD_LEN
+
+    names: dict[int, str] = {}
+    for i in range(0, len(eeprom_data), USER_NAME_RECORD_LEN):
+        record = eeprom_data[i : i + USER_NAME_RECORD_LEN]
+        if len(record) < USER_NAME_RECORD_LEN:
+            break
+        raw = record.split(b"\x00", 1)[0]
+        try:
+            name = raw.decode("ascii", errors="ignore").strip()
+        except UnicodeDecodeError:
+            name = ""
+        if name and not _is_uninitialized_pattern(raw):
+            names[user_offset + (i // USER_NAME_RECORD_LEN)] = name
     return names
 
 

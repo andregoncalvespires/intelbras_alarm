@@ -25,6 +25,17 @@ E/EG, ANM 24 Net, AMT 4010 SMART** e outros modelos da mesma família (ver
 lista completa abaixo), via protocolo ISECNet/ISECMobile (o mesmo do app
 AMT Mobile) — conexão TCP direta e persistente com a central.
 
+> 🧪 **Inclui suporte experimental à AMT 8000**, via um protocolo próprio
+> e diferente (autenticado, não é o ISECNet/ISECMobile das demais
+> centrais) — ativado só se você marcar explicitamente a opção na
+> configuração inicial; os demais modelos continuam com detecção
+> automática, sem nenhuma mudança de comportamento. **Ainda não foi
+> testado contra hardware real** — toda a lógica vem de engenharia
+> reversa do app oficial e de um fluxo de terceiros usado como
+> referência. Ver a seção
+> ["AMT 8000 (experimental)"](README_DETALHADO.md#amt-8000-experimental)
+> no README detalhado antes de usar.
+
 A integração usa as entidades **padrão do próprio Home Assistant** para
 representar a central como uma central de segurança de verdade deveria
 ser representada: `alarm_control_panel` para a central e cada partição,
@@ -44,6 +55,7 @@ sabotagem, sirene, etc.) como entidades próprias.
 | AMT 1016 NET | 3.1 | — |
 | AMT 2018 E/EG | 4.7 | — |
 | AMT 4010 SMART | 5.2; 5.4; 6.2¹ | ver nota¹ abaixo |
+| AMT 8000 | — | **Nenhum teste em hardware real ainda.** Diferente das linhas acima (mesmo protocolo ISECMobile, só variando modelo/firmware), a AMT 8000 usa um protocolo **inteiramente diferente** — toda a implementação vem de engenharia reversa, sem nenhuma validação de campo. Ver seção própria no README_DETALHADO.md. |
 
 ¹ **Firmware 6.2**: comportamento incorreto conhecido — a central
 envia uma resposta de status menor que o esperado, aleatoriamente. É
@@ -90,25 +102,39 @@ adicione a URL deste repositório (categoria Integração) → instale
 
 1. **IP** e **porta** da central (padrão `9009`).
 2. **Senha** (a mesma do app AMT Mobile, 4 a 6 dígitos).
-3. Opcional: marque se quer que o Home Assistant **peça a senha** antes de
+3. Opcional (marque **só** se sua central for uma **AMT 8000**): **"AMT
+   8000 (protocolo experimental)"** — essa central usa um protocolo
+   totalmente diferente das demais, então, ao contrário dos outros
+   modelos, **não é detectada automaticamente** (por segurança — ver
+   README_DETALHADO.md, seção "AMT 8000 (experimental)", pra entender o
+   motivo). Deixe desmarcado para qualquer outro modelo.
+4. Opcional: marque se quer que o Home Assistant **peça a senha** antes de
    ativar e/ou desativar pela interface (por padrão, nenhuma das duas —
-   usa a senha configurada automaticamente, sem perguntar nada).
-4. Opcional: **zonas habilitadas por padrão** — formato `1-5;8;10-15`
+   usa a senha configurada automaticamente, sem perguntar nada). **Na AMT
+   8000**, essa senha é conferida **localmente pela integração** contra a
+   senha configurada (o comando de arme/desarme dessa central não carrega
+   senha própria) — nas demais centrais, quem confere é a própria central.
+5. Opcional: **zonas habilitadas por padrão** — formato `1-5;8;10-15`
    (intervalos e/ou números separados por `;`). Padrão: `1-8;17-24`. As
    demais zonas continuam existindo, só ficam desabilitadas até você
    habilitá-las manualmente em Configurações → Entidades.
-5. Opcional: **habilitar recepção de eventos (Receptor IP)** e a porta de
+6. Opcional: **habilitar recepção de eventos (Receptor IP)** e a porta de
    escuta (padrão `9010`) — ver seção própria mais abaixo. Desligado por
    padrão; precisa de configuração adicional **na própria central**, fora
-   desta integração.
-6. Opcional: **senha de leitura de mensagens (6 dígitos)** — deixe em
+   desta integração. **Também funciona com a AMT 8000** (que reporta
+   eventos pelo mesmo subconjunto de comandos do Receptor IP — ver seção
+   "AMT 8000 (experimental)" — mas isso ainda não foi confirmado com
+   captura real).
+7. Opcional: **senha de leitura de mensagens (6 dígitos)** — deixe em
    branco se seu modelo já aparece na lista de "Nomes de zona e log de
    eventos" abaixo. Preencha (a mesma "Senha Acesso Remoto" do app AMT
    Mobile) só se sua central ficar de fora dessa lista e você mesmo
    assim quiser nomes de zona/usuário e eventos — usa um protocolo
-   alternativo, confirmado funcionando em hardware real.
-7. O **modelo é detectado automaticamente** — sem campo manual.
-8. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
+   alternativo, confirmado funcionando em hardware real. Não se aplica
+   à AMT 8000.
+8. Nos demais modelos (checkbox da AMT 8000 desmarcado), o **modelo é
+   detectado automaticamente** — sem campo manual.
+9. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
    diferentes por partição (A/B/C/D), se sua central tiver — opcional,
    deixe em branco para usar a senha principal em todas.
 
@@ -135,9 +161,9 @@ não são editáveis ali (esse último só funciona na configuração inicial)
 
 - **Alarme** (`alarm_control_panel`): uma para a central e uma para cada
   partição (se a central estiver particionada). Estados: desarmada,
-  armada ausente, armada presente (Stay — só em AMT 4010 SMART e AMT 2018
-  E SMART) e disparada — os mesmos estados que uma central de alarme de
-  verdade tem, com suporte a código/senha na própria interface.
+  armada ausente, armada presente (Stay — AMT 4010 SMART, AMT 2018
+  E SMART e AMT 8000) e disparada — os mesmos estados que uma central de
+  alarme de verdade tem, com suporte a código/senha na própria interface.
 
   ![Painel de controle da central AMT 4010 SMART armada em modo presente (Stay)](docs/images/controle-armado-em-casa-4010.jpeg)
 
@@ -172,7 +198,11 @@ não são editáveis ali (esse último só funciona na configuração inicial)
   status normal), **"Últimos eventos"** (só nos modelos/firmwares da
   tabela abaixo — ver seção própria mais adiante), e, se o Receptor IP
   estiver habilitado, **"Último evento (Receptor IP)"** e **"Último sinal
-  de vida (Receptor IP)"** (ver seção própria).
+  de vida (Receptor IP)"** (ver seção própria). **"Tensão da fonte"** e
+  **"Tensão da bateria"** (só com a senha de leitura de 6 dígitos
+  configurada — ver seção "Nomes de zona e log de eventos" mais abaixo —
+  atualizadas a cada 5 minutos, num agendamento próprio e mais espaçado
+  que o polling de status normal).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —
@@ -181,6 +211,12 @@ não são editáveis ali (esse último só funciona na configuração inicial)
   anular zonas abertas/violadas/ambas, remover todas as anulações, e
   (só nos modelos/firmwares da tabela abaixo) sincronizar nomes de zona
   lidos da central.
+- **Foto de evento** (`camera`, só na **AMT 8000**): última foto
+  registrada por um sensor com câmera, se a central tiver algum.
+  ⚠️ **Incompleta**: hoje a entidade existe e funciona com segurança
+  (mostra "sem imagem disponível"), mas ainda **não consegue baixar uma
+  foto de verdade** — falta identificar com confiança um campo do
+  protocolo (ver seção "AMT 8000 (experimental)" no README_DETALHADO.md).
 
 ## Nomes de zona e log de eventos — só em alguns modelos/firmwares
 
@@ -197,14 +233,19 @@ pede a "Senha de Acesso Remoto" para essas duas funções:
 | AMT 2018 E SMART | qualquer |
 | ANM 24 Net | qualquer |
 
+> Essa tabela **não se aplica à AMT 8000** — ela lê nomes de zona e
+> eventos por um comando totalmente diferente, próprio dela, sempre
+> disponível (nenhum limiar de firmware). Ver seção "AMT 8000
+> (experimental)" no README_DETALHADO.md.
+
 Fora dessa lista (por exemplo, uma AMT 1016 NET com firmware abaixo de
 4.10), a central usa um protocolo diferente e mais antigo — que, a
 partir da v2.0.2, **também é suportado**, opcionalmente: informe
 a "Senha de leitura de mensagens" (6 dígitos, a mesma "Senha Acesso
 Remoto" pedida pelo app AMT Mobile) na configuração da integração
-(deixe em branco se não quiser usar). Sem essa senha preenchida, o
-botão de sincronizar nomes de zona e o serviço de eventos continuam
-sem fazer nada, como antes.
+(deixe em branco se não quiser usar). Não se aplica à AMT 8000. Sem
+essa senha preenchida, o botão de sincronizar nomes de zona e o
+serviço de eventos continuam sem fazer nada, como antes.
 
 ## Serviço `intelbras_alarm.bypass_zone`
 

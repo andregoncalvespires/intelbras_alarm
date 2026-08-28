@@ -385,7 +385,7 @@ cosmético, não muda nenhum comportamento.
 | `button` | Pânico silencioso / audível / emergência médica / incêndio | comando `0x45` |
 | `button` | Anular zonas abertas / Anular zonas violadas / Anular zonas abertas ou violadas | comando `0x42`; preserva anulações já existentes em outras zonas; o terceiro botão une os dois conjuntos numa única operação (evita que uma anulação desfaça a outra, já que o comando é absoluto) |
 | `button` | Remover todas as anulações de zona | comando `0x42`; reativa **todas** as zonas de uma vez (não pede número de zona) |
-| `button` | Sincronizar nomes de zona | só nos modelos/firmwares com acesso ao comando `0x5C` para isso — ver seção "Nomes de zona e log de eventos" abaixo (**não** é mais "só família 4010"; passou a valer para toda a lista, incluindo 2018 EG e ANM 24 Net, com as ressalvas de firmware) |
+| `button` | Sincronizar nomes de zona | só nos modelos/firmwares com acesso ao comando `0x5C` para isso — ver seção "Nomes de zona e log de eventos" abaixo (**não** é mais "só família 4010"; passou a valer para toda a lista, incluindo 2018 EG e ANM 24 Net, com as ressalvas de firmware). Desde a v2.1.0, também busca nomes de **usuário** na mesma chamada (usados para enriquecer as mensagens do Receptor IP — ver seção própria) |
 
 > Todos os `button` acima ficam **indisponíveis** quando a comunicação com
 > a central não está ativa (switch desligado, ou falha de conexão) — não
@@ -573,11 +573,12 @@ automático de eventos, só quando o serviço é chamado explicitamente).
 
 O campo `zona_usuario` é o número cru — pode ser uma **zona** ou um
 **usuário**, dependendo do tipo de evento (ex.: em "Disparo de zona" é o
-número da zona; em "Ativação pelo usuário" é o número do usuário). Esta
-integração não resolve esse número para o nome correspondente (nem de
-zona, nem de usuário) automaticamente — fica como número mesmo, para
-manter o escopo desta primeira versão simples; o nome da zona pode ser
-cruzado manualmente com as entidades de zona já existentes, se precisar.
+número da zona; em "Ativação pelo usuário" é o número do usuário). O
+serviço `read_events` **não resolve** esse número para o nome
+correspondente — fica como número mesmo aqui, para manter o escopo
+simples; o nome pode ser cruzado manualmente com as entidades de zona já
+existentes, se precisar. (O Receptor IP, mais abaixo, **já resolve**
+automaticamente — ver seção "Receptor IP".)
 
 O **modelo** e a **versão de firmware** detectados ficam no registro do
 dispositivo (não como entidades separadas), visíveis em
@@ -734,8 +735,13 @@ continua dependendo da rede local estar protegida.
 - **"Último evento (Receptor IP)"** (`sensor`): estado = descrição do
   evento + partição + zona/usuário concatenados (só quando fazem sentido
   para aquele evento específico — nem todo evento tem partição/zona,
-  ex.: "Teste periódico"). Atributos: `codigo` (4 dígitos), `conta`,
-  `particao`, `zona_usuario`, e `data_hora_evento` (só presente quando o
+  ex.: "Teste periódico"). Quando o evento é de um tipo que carrega zona
+  ou usuário no campo bruto (ver `const.RECEPTOR_IP_EVENT_SUBJECT`) *e*
+  temos esse nome carregado (`coordinator.zone_names`/`user_names`), o
+  estado mostra o **nome** em vez do número cru — sem nome disponível,
+  cai de volta pro número, como antes. Atributos: `codigo` (4 dígitos),
+  `conta`, `particao`, `zona_usuario` (sempre o número cru), `nome` (o
+  nome resolvido, ou `None`), e `data_hora_evento` (só presente quando o
   evento veio via `0xB4`, com data/hora embutida).
 - **"Último sinal de vida (Receptor IP)"** (`sensor`, `device_class:
   timestamp`): data/hora **deste servidor Home Assistant** (não da
@@ -761,6 +767,260 @@ indisponíveis) enquanto o Receptor IP estiver desligado na configuração.
   oficialmente para o lado do receptor — podem precisar de ajuste se, na
   prática, alguma central levar mais tempo que isso para se identificar
   ou para mandar o próximo heartbeat.
+
+**Bug real corrigido** (relatado pelo usuário): recarregar ou
+reconfigurar a integração enquanto a central tinha uma conexão ativa no
+Receptor IP fazia a comunicação parar de vez — sem erro nenhum visível,
+só silêncio — e nem recarregar de novo nem reconfigurar resolviam; só um
+reinício completo do Home Assistant. Causa: `Server.close()` do próprio
+asyncio, usado em `async_stop()`, só impede **novas** conexões — a
+documentação oficial é explícita ("This leaves existing connections
+open"). A task de `_handle_connection` da conexão que já estava ativa
+continuava rodando indefinidamente, com os callbacks (`on_event`/
+`on_heartbeat`) ainda apontando pro coordinator antigo, mesmo depois de
+um novo servidor ser criado no recarregamento — e a central, sem saber
+que precisa reconectar (o TCP dela continua "vivo" do lado dela), seguia
+mandando eventos pra essa conexão órfã. Corrigido rastreando as conexões
+ativas (`_active_writers`) e fechando cada uma explicitamente em
+`async_stop()`, forçando a central a perceber a queda e reconectar na
+próxima tentativa dela.
+
+---
+
+## AMT 8000 (experimental)
+
+> ⚠️ **Nada nesta seção foi validado contra hardware real.** Toda a
+> implementação vem de engenharia reversa (decompilação do app oficial
+> AMT Remoto v3.4.2.2) cruzada com um fluxo Node-RED de terceiros usado
+> como referência inicial.
+
+A AMT 8000 usa um **protocolo de comunicação completamente diferente**
+do ISECNet/ISECMobile usado pelas demais centrais suportadas — não é uma
+variação de comando dentro do mesmo protocolo, é outro protocolo desde o
+primeiro byte, com sessão autenticada.
+
+### Arquitetura: módulo novo, não uma extensão do protocolo existente
+
+Reaproveita o padrão já usado para o Receptor IP (protocolo diferente →
+módulo próprio, não uma ramificação dentro do código existente):
+
+- `protocol_amt8000.py` — framing, checksum, construtores de frame,
+  parsers (camada pura, sem I/O).
+- `panel_client_amt8000.py` — conexão TCP persistente + sessão
+  autenticada, equivalente ao `panel_client.py` das demais centrais.
+- `coordinator.py` ganhou métodos específicos (`_async_update_data_amt8000`,
+  `_async_refresh_zone_names_amt8000`, `_async_read_events_amt8000`,
+  `async_request_event_photo`) que a família `FAMILY_8000` usa no lugar
+  dos equivalentes ISECMobile — sem alterar o comportamento das demais
+  famílias.
+- `camera.py` — entidade nova, só para esta família (ver "Fotos de
+  evento" abaixo).
+- `receptor_ip.py` — **sem alteração nenhuma**: a AMT 8000 reporta
+  eventos em tempo real pelo mesmo subconjunto de comandos já
+  implementado (`0xB0`, `0xB4`, `0xF7`) — ainda não confirmado com
+  captura real, mas não deveria exigir nenhuma mudança nesse módulo se
+  se confirmar.
+
+### Framing e checksum
+
+```
+[0x00 0x00] [srcId: 0x00 0x01] [0x00] [LEN] [opcode_hi opcode_lo] [conteúdo...] [checksum]
+```
+
+- `srcId` — par fixo `[0x00, 0x01]`, observado sempre assim (provável
+  marcador de versão de protocolo).
+- `LEN` — bytes entre o próprio campo e o checksum (opcode + conteúdo),
+  exclusive o checksum.
+- **Checksum**: XOR de todos os bytes anteriores, complementado
+  (`^ 0xFF`) — **mesmo algoritmo usado em todo o resto do protocolo**
+  desta integração (ISECMobile principal, Receptor IP). Confirmado byte
+  a byte contra `checkSum()` em `ProtocoloServidorAmt8000` no app
+  oficial.
+
+### Autenticação (opcode `0xF0F0`)
+
+Conexão **persistente**, com uma autenticação única por sessão — reaproveita
+o mesmo padrão de conexão do `panel_client.py` das demais famílias.
+
+Senha: 6 dígitos, um nibble por byte, **dígito `0` vira `0x0A`** — essa é
+a **mesma convenção do Receptor IP e do protocolo legado `0xE7`**
+(estilo Contact-ID), **não** a do ISECMobile principal (que usa senha em
+ASCII puro — ver seção "Nomes de zona e log de eventos" mais abaixo e o
+Changelog). Preenchida com `0x01` até completar 6 posições se a senha
+tiver menos dígitos.
+
+Checksum de referência validado nesta implementação: senha de teste
+`786531` produz frame terminado em `0xF9` — confirmado contra
+`Amt8000.autenticaConexaoRemota()` do app oficial.
+
+### "Pedir senha para ativar/desativar" — comportamento diferente das demais famílias
+
+O comando de arme/desarme (`0x401E`, ver tabela de opcodes abaixo) **não
+carrega nenhum campo de senha** — a autenticação acontece uma única vez,
+na conexão (seção anterior), não a cada comando. Isso muda o que a opção
+"Pedir a senha para ATIVAR/DESATIVAR pelo Home Assistant" (`config_flow.py`,
+`CONF_CODE_REQUIRED_ARM`/`CONF_CODE_REQUIRED_DISARM`) precisa fazer:
+
+- **Nas demais famílias** (ISECMobile): o valor digitado na UI vira,
+  literalmente, a senha embutida no comando enviado à central — é a
+  **central** quem valida (NACK "Senha incorreta" se estiver errada).
+- **Na AMT 8000**: como o comando de fio não tem onde colocar essa senha,
+  o valor digitado é comparado **localmente**, pela própria integração,
+  contra a senha já configurada (`coordinator.password_for_partition()`)
+  — **antes** de qualquer comando ser enviado. Se não bater, a ação é
+  bloqueada com erro "Senha incorreta" sem nada ser mandado à central.
+
+**Por que essa mudança foi necessária** (achado real, não teórico):
+antes desta correção, `_resolve_password()` só conferia o **formato** do
+que foi digitado (4 a 6 dígitos numéricos) — nunca o conteúdo — e o
+valor digitado nunca chegava de fato ao comando `0x401E` (que não tem
+onde colocá-lo). Na prática, **qualquer sequência de 4 a 6 dígitos
+"funcionava"** para armar/desarmar uma AMT 8000 com essa opção marcada
+— uma falha de segurança real, não só uma inconsistência de UX. Corrigido
+comparando localmente antes de agir, em vez de simplesmente desabilitar a
+opção — preserva a utilidade original da funcionalidade (impedir que
+alguém sem saber a senha arme/desarme por um painel/dashboard
+compartilhado do Home Assistant).
+
+> ℹ️ Isso não se aplica a PGM, bypass, pânico ou nenhum outro comando —
+> só arme/desarme têm essa opção de "pedir senha" na UI do Home
+> Assistant (é um recurso padrão do `alarm_control_panel`, não algo
+> desta integração criou para outros domínios de entidade).
+
+### Opcodes confirmados (extraídos do código-fonte do app oficial)
+
+| Ação | Opcode | Conteúdo |
+|---|---|---|
+| Autenticação | `0xF0F0` | senha (6 dígitos, `0`→`0x0A`) |
+| Status completo | `0x0B4A` | — |
+| Armar/desarmar/stay | `0x401E` | `[partição, modo]` |
+| Bypass de zona (**individual**) | `0x401F` | `[índice_zona, flag 0/1]` |
+| PGM on/off | `0x45AF` | `[pgm, on/off]` |
+| Pânico | `0x401A` | `[tipo]` |
+| Índice do buffer de eventos | `0x3003` | `[0x00]` |
+| Leitura de eventos | `0x3900` | lista de índices (par alto/baixo), até 16 por chamada |
+| Solicitar foto | `0x0BB0` | ver "Fotos de evento" abaixo |
+| Nome da central | `0x31E0` | — |
+| Nomes de zona | `0x33E0` | lista de índices |
+| Nomes de usuário | `0x32E0` | lista de índices |
+| Nomes de partição | `0x34E0` | lista de índices |
+| Nomes de PGM | `0x35E0` | lista de índices |
+| Nomes de teclado | `0x36E0` | lista de índices |
+| Nomes de sirene | `0x38E0` | lista de índices |
+| Desconectar | `0xF0F1` | — |
+
+⚠️ `COMANDO_READ_EEPROM` (`0x3F12`) existe como constante declarada no
+app oficial, mas **não é usado em nenhum lugar** dele — tratado como não
+confiável, fora do escopo desta integração.
+
+**Diferença importante em relação ao ISECMobile**: o bypass de zona
+(`0x401F`) é **individual, uma zona por comando** — diferente do `0x42`
+do ISECMobile principal, que é um comando **absoluto** sobre as 64
+zonas de uma vez. `coordinator.async_bypass_zones()` já trata isso:
+para `FAMILY_8000`, envia um frame por zona, em loop; para as demais
+famílias, continua enviando o comando absoluto único.
+
+**Arme/desarme de "central inteira"**: usa `0xFF`
+(`const.AMT8000_ALL_PARTITIONS`) no byte de partição do comando
+`0x401E` — corrigido de `0` (herdado sem confirmação do fluxo Node-RED
+de referência) para `0xFF`, valor confirmado em hardware real pelo
+projeto de terceiros `fdaneluzzi/homeassistant-amt8000`. Partições
+individuais (1-16) continuam informando o próprio número.
+
+### Status completo (`0x0B4A`)
+
+Blob de **143 bytes** de conteúdo (`const.AMT8000_STATUS_MAX_LEN`) —
+valor **confirmado** contra hardware real pelo projeto de terceiros
+`fdaneluzzi/homeassistant-amt8000` (não é mais uma estimativa). Mesmo
+assim, os *offsets* dos campos dentro desse conteúdo continuam sem
+validação própria (protocolo ainda experimental) — por isso a checagem
+de tamanho truncado para a AMT 8000 segue com uma margem cautelosa (só
+trata como falha se vier abaixo de 50% do esperado), diferente das
+demais famílias (`FAMILY_STATUS_LEN`, comparação exata, validada em
+campo há muito tempo) — ver "Diagnóstico de resposta com tamanho
+inesperado" mais abaixo, agora compartilhado entre todas as famílias.
+
+Offsets mapeados (todos por engenharia reversa, não confirmados em
+campo por captura própria): zonas (1-64, bitfields de aberta/violada/
+anulada/bateria-baixa/tamper/falha-comunicação), partições (1-16, **1
+byte por partição**, não 1 bit — bit 0 de cada byte, invertido: 0 =
+armada), data/hora em
+BCD, bateria (enum de 4 níveis: 0/33/66/100%), PGMs, sirene, AC/bateria.
+
+### Leitura de eventos (`0x3900`)
+
+Buffer circular de até **512 posições** (`AMT8000_EVENT_BUFFER_SIZE`),
+lido em blocos de até **16 registros por chamada**
+(`AMT8000_EVENT_READ_BATCH`). Layout do registro (extraído de
+`Translate8000Events` no app oficial):
+
+| Índice | Campo |
+|---|---|
+| 2–7 | Ano, mês, dia, hora, minuto, segundo |
+| 8–9 | Código de evento (qualificador + Contact-ID) |
+| 10–11 | Evento programado |
+| 11–12 | Zona/usuário |
+| 13 | Partição |
+| 14 | Flag de foto associada |
+
+### Nomes (zona/usuário/partição/PGM/teclado/sirene)
+
+Lidos **1 índice por requisição** — decisão deliberada desta primeira
+versão (prioriza isolamento de erro e simplicidade do parser sobre
+desempenho), diferente do app oficial, que lê em lotes de 10. Só roda na
+configuração inicial ou numa sincronização manual, nunca durante o
+polling normal. Reaproveita o mesmo botão "Sincronizar nomes de zona" já
+existente — `supports_extended_eeprom` retorna `True` incondicionalmente
+para `FAMILY_8000` (sem limiar de firmware, diferente das demais
+famílias — ver seção própria mais abaixo).
+
+### Fotos de evento (`camera.py`) — incompleto, lacuna conhecida
+
+A entidade `camera` existe e funciona com segurança (mostra "sem imagem
+disponível" quando não há foto), mas **ainda não consegue baixar uma
+foto de verdade**. O formato do registro de evento decodificado hoje só
+extrai um flag booleano "tem foto" — falta identificar com confiança o
+**índice exato** que a central espera de volta para solicitar aquela
+foto específica (comando `0x0BB0`). O fluxo completo de download
+(autenticação de sessão de fotos + fragmentação) já está documentado no
+LEIA-ME de referência (Base de Conhecimento do Projeto), mas nunca foi
+exercitado nesta implementação. Fotos, quando o fluxo funcionar, ficam
+salvas em `/media/amt8000/<entry_id>/` (diretório de mídia do Home
+Assistant), não só em memória — para continuar acessíveis mesmo depois
+de um evento novo chegar.
+
+### Configuração: seleção manual, não detecção automática
+
+Diferente das demais 5 famílias (sondadas automaticamente por tentativa
+e erro dentro do mesmo protocolo ISECMobile), a AMT 8000 exige marcar
+manualmente a opção **"AMT 8000 (protocolo experimental)"** na tela de
+configuração inicial (`config_flow.py`, `CONF_AMT8000_MODE`).
+
+**Por quê**: a AMT 8000 usa um protocolo de transporte totalmente
+diferente — não haveria uma forma segura de "tentar" esse protocolo
+silenciosamente durante a sondagem automática das outras famílias sem
+risco de confundir esse fluxo já validado em produção. Essa cautela não
+é teórica: uma tentativa real de sondar um protocolo "errado" contra uma
+central (o protocolo legado `0xE7`, numa AMT 1016 NET) já causou um
+**travamento real de central** durante os testes deste projeto (ver
+"Limitações conhecidas" mais abaixo) — o mesmo tipo de risco que se
+tentaria evitar aqui.
+
+### O que ainda depende de validação em campo
+
+- Comportamento exato de timeout/reconexão da sessão autenticada sob
+  polling sustentado.
+- Confirmação byte a byte do blob de status (offsets mapeados via
+  engenharia reversa, nunca vistos contra uma captura real).
+- Resposta real ao comando de leitura de nome individual (formato de
+  retorno — quantos bytes, se inclui padding).
+- Fluxo completo de download de foto (autenticação de sessão de fotos +
+  fragmentação) — ver "Fotos de evento" acima.
+- Se o Receptor IP realmente funciona sem alteração para esta família
+  (assumido, nunca testado).
+
+Nenhum desses pontos impede o uso experimental — são validações naturais
+da fase de testes com hardware real.
 
 ---
 
@@ -1035,6 +1295,10 @@ recebidos em hex, não só a contagem.
    seção 7.4 como o comportamento da AMT 4010 para esse comando), envia
    `0x5B` (status completo) e identifica o modelo pelo Status25.
 3. Caso contrário, identifica o modelo pelo Status19 da resposta ao `0x5A`.
+
+Não inclui a AMT 8000 nessa sondagem — protocolo de transporte
+incompatível, exige seleção manual (`CONF_AMT8000_MODE`). Ver seção
+"AMT 8000 (experimental)" para o motivo.
 
 ### Nomes de zona e log de eventos (EEPROM, comando `0x5C`)
 
@@ -1361,6 +1625,9 @@ não estão batendo com o comportamento real da central.
 
 ## Limitações conhecidas
 
+- **AMT 8000 é experimental, sem nenhuma validação em hardware real** —
+  ver seção própria "AMT 8000 (experimental)" para o que ainda depende
+  de teste de campo.
 - O protocolo não informa **qual partição** disparou quando há mais de uma
   partição armada — o alarme mostra `triggered` em todas as partições
   armadas simultaneamente (ver seção sobre `triggered` acima).
@@ -1385,7 +1652,7 @@ não estão batendo com o comportamento real da central.
   resto da integração** — só nos listados na seção "Nomes de zona e log
   de eventos" acima. Fora dessa lista, ver a seção "Protocolo legado" a
   seguir — desde a v2.0.2, existe um caminho alternativo,
-  opcional.
+  opcional (não se aplica à AMT 8000).
 
 ### Protocolo legado (`0xE7`) de nomes/eventos
 
@@ -1448,6 +1715,78 @@ anteriores).
   incluso. Isso, aliás, bate com o que a própria captura real do app
   oficial mostrou: consulta de status normal e comandos `0xE7` na
   **mesma** conexão, sem reabrir nada entre um e outro.
+
+#### Tensão da fonte e da bateria (sub-comando `[1, 0x17]`)
+
+Um sub-comando diferente dentro do mesmo `0xE7` — não lê EEPROM (não
+usa `[4,18,endereço,...]`), é uma consulta de status direta:
+`[1, 0x17, crc_hi, crc_lo]`, mesma autenticação, mesmo CRC, mesmo
+checksum já documentados acima.
+
+**Confirmado em hardware real pelo usuário**, com dois testes
+independentes:
+- AMT 1016 NET, firmware 3.1 (família 2018): fonte 14,49V, bateria
+  13,66V
+- AMT 4010 SMART, firmware 5.2 (família 4010, que normalmente usa
+  `0x5C` para nomes/eventos — **este sub-comando funciona mesmo
+  assim**, via `0xE7`): fonte 13,58V, bateria 0,00V (central testada
+  sem bateria conectada — valor real, não um erro de leitura)
+
+Formato da resposta — os dois valores são `uint16` big-endian,
+divididos por `67.0`; o offset dentro de `content` **muda por
+família** (resposta inteira também tem tamanho diferente: 29 bytes na
+família 2018, 35 na família 4010):
+
+| Família | Offset fonte | Offset bateria |
+|---|---|---|
+| 2018 | `content[18:20]` | `content[20:22]` |
+| 4010 | `content[22:24]` | `content[24:26]` |
+
+⚠️ Durante a implementação, um offset da família 4010 foi transcrito
+errado por 1 byte numa etapa manual — achado e corrigido só depois de
+testar o parser contra os dois exemplos reais de ponta a ponta (ver
+CHANGELOG.md). Reforça por que todo comando novo deste projeto passa
+por esse tipo de teste antes de ir pra produção.
+
+**Disponibilidade** (`coordinator.supports_voltage_reading`): só a
+senha de 6 dígitos configurada — **não depende de**
+`supports_extended_eeprom`/`supports_legacy_eeprom` (por isso funciona
+na 4010 mesmo com `0x5C` disponível para outras coisas) — e a família
+ter offset confirmado na tabela acima. Isso inclui a **ANM 24 Net**
+(mesma família 2018 da tabela) por extrapolação — decisão do usuário;
+nunca testado especificamente nesse modelo, que tem seu próprio
+protocolo de EEPROM (`0xF1`, ver seção sobre engenharia reversa da ANM
+24 Net) para outras finalidades. Se não funcionar nela, a consulta
+falha de forma silenciosa (log de aviso a cada 5 minutos, sem quebrar
+mais nada) — mesmo tratamento *best-effort* usado em toda esta seção.
+**Não se aplica** à AMT 8000 (protocolo totalmente diferente, nunca
+passa por `0xE7`).
+
+**Arquitetura**: consulta **a cada 5 minutos**, num agendamento
+próprio (`homeassistant.helpers.event.async_track_time_interval`),
+deliberadamente **fora** do polling rápido de status (a cada poucos
+segundos) — esta leitura exige autenticação própria a cada vez (o
+protocolo não mantém sessão entre comandos), o que seria overhead
+desnecessário no mesmo ritmo do status. Reaproveita a mesma conexão
+persistente de tudo mais; a fila (`asyncio.Lock` já existente em
+`panel_client.py`) evita qualquer corrupção de frame por concorrência
+com o polling normal.
+
+**Bugs reais corrigidos após testes em campo** (ver CHANGELOG.md):
+- O timer de 5 minutos só era registrado se a conexão já estivesse
+  habilitada no momento do (re)carregamento — religar o switch "Conexão
+  com a central" depois não recriava o timer, exigindo um reinício
+  completo do Home Assistant. Corrigido: o timer agora é sempre
+  registrado; `async_refresh_voltage()` verifica sozinho
+  `self.client.enabled` e sai em silêncio (sem log) quando desligado.
+- Timeouts esporádicos na consulta de status normal, coincidindo
+  sistematicamente com múltiplos de 5 minutos — a análise inicial
+  ("no pior caso, levemente atrasado") **subestimou o impacto real**;
+  a central aparentemente precisa de um instante para se recompor
+  depois da troca autenticada via `0xE7` antes de voltar a responder
+  prontamente ao polling rápido. Mitigado com uma pausa de acomodação
+  de 1 segundo logo após a consulta de tensão — heurística baseada na
+  correlação observada nos logs, não uma medição exata da causa raiz.
 
 **Ainda em aberto**: os endereços acima só foram confirmados numa
 central real (1016 NET); os três códigos de evento vistos numa leitura

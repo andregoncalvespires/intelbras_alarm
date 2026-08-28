@@ -35,17 +35,25 @@ from .const import (
     OPT_POLLING_INTERVAL,
     parse_zone_spec,
 )
-from .coordinator import async_detect_model
+from .coordinator import async_detect_amt8000, async_detect_model
 from .panel_client import PanelConnectionError
+from .panel_client_amt8000 import Amt8000AuthError, PanelConnectionErrorAmt8000
 from .protocol import NackError
 
 _LOGGER = logging.getLogger(__name__)
+
+# Campo do passo "user": marcar liga a autenticação/protocolo experimental
+# da AMT 8000 em vez da sondagem automática entre 2018/1016/SMART/4010 (ver
+# docstring de coordinator.async_detect_amt8000 para o motivo de não
+# incluir esta família na sondagem automática).
+CONF_AMT8000_MODE = "amt8000_mode"
 
 STEP_USER_SCHEMA = vol.Schema(
     {
         vol.Required("host"): str,
         vol.Required("port", default=DEFAULT_PORT): vol.Coerce(int),
         vol.Required(CONF_PASSWORD): str,
+        vol.Optional(CONF_AMT8000_MODE, default=False): bool,
         vol.Optional(CONF_CODE_REQUIRED_ARM, default=DEFAULT_CODE_REQUIRED_ARM): bool,
         vol.Optional(CONF_CODE_REQUIRED_DISARM, default=DEFAULT_CODE_REQUIRED_DISARM): bool,
         vol.Optional(CONF_ENABLED_ZONES, default=DEFAULT_ENABLED_ZONES_SPEC): str,
@@ -89,9 +97,17 @@ async def _validate_and_detect(hass: HomeAssistant, data: dict[str, Any]) -> dic
     # propagar para o chamador tratar.
     parse_zone_spec(data[CONF_ENABLED_ZONES])
 
-    model_key, model_name, family = await async_detect_model(
-        data["host"], data["port"], password
-    )
+    if data.get(CONF_AMT8000_MODE):
+        # EXPERIMENTAL — ver coordinator.async_detect_amt8000. Não passa
+        # pela sondagem automática 2018/4010 de propósito: são
+        # protocolos de transporte incompatíveis (ver protocol_amt8000.py).
+        model_key, model_name, family = await async_detect_amt8000(
+            data["host"], data["port"], password
+        )
+    else:
+        model_key, model_name, family = await async_detect_model(
+            data["host"], data["port"], password
+        )
     return {"model_key": model_key, "model_name": model_name, "family": family}
 
 
@@ -127,6 +143,8 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except InvalidZoneSpec:
                 errors[CONF_ENABLED_ZONES] = "invalid_zone_spec"
             except PanelConnectionError:
+                errors["base"] = "cannot_connect"
+            except PanelConnectionErrorAmt8000:
                 errors["base"] = "cannot_connect"
             except UpdateFailed:
                 errors["base"] = "cannot_connect"
@@ -254,7 +272,11 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     await coordinator.async_validate_password(password)
                 except NackError:
                     errors["base"] = "password_rejected"
+                except Amt8000AuthError:
+                    errors["base"] = "password_rejected"
                 except PanelConnectionError:
+                    errors["base"] = "cannot_connect"
+                except PanelConnectionErrorAmt8000:
                     errors["base"] = "cannot_connect"
                 except UpdateFailed:
                     errors["base"] = "cannot_connect"

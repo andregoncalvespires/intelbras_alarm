@@ -148,6 +148,9 @@ class ReceptorIPServer:
         self._on_event = on_event
         self._on_heartbeat = on_heartbeat
         self._server: asyncio.base_events.Server | None = None
+        # Conexões atualmente aceitas (não só o socket de escuta) — ver
+        # async_stop() para o motivo de rastrear isso explicitamente.
+        self._active_writers: set[asyncio.StreamWriter] = set()
 
     async def async_start(self) -> None:
         self._server = await asyncio.start_server(
@@ -177,7 +180,31 @@ class ReceptorIPServer:
                     "— seguindo em frente mesmo assim"
                 )
             self._server = None
-            _LOGGER.info("Receptor IP: servidor encerrado")
+
+        # BUG REAL corrigido (relatado pelo usuário): server.close() só
+        # impede NOVAS conexões — a documentação do próprio asyncio é
+        # explícita sobre isso ("This leaves existing connections open").
+        # Se a central estivesse com uma conexão ativa no momento do
+        # descarregamento (ex.: recarregar a integração), a task daquela
+        # conexão específica continuava rodando indefinidamente, presa no
+        # loop de _handle_connection, com os callbacks (on_event/
+        # on_heartbeat) ainda apontando pro coordinator antigo — mesmo
+        # depois de um novo ReceptorIPServer ser criado. A central não
+        # detecta isso (o TCP dela continua "vivo" do lado dela) e
+        # continuava mandando eventos pra essa conexão órfã, que nunca
+        # mais chegava a lugar nenhum útil. Só um reinício completo do
+        # Home Assistant matava essa task de vez. Fechar explicitamente
+        # cada conexão ativa aqui força a central a perceber a queda e
+        # reconectar na próxima tentativa dela.
+        for writer in list(self._active_writers):
+            writer.close()
+            try:
+                await asyncio.wait_for(writer.wait_closed(), timeout=3)
+            except (asyncio.TimeoutError, OSError):
+                pass
+        self._active_writers.clear()
+
+        _LOGGER.info("Receptor IP: servidor encerrado")
 
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -199,6 +226,7 @@ class ReceptorIPServer:
             return
 
         _LOGGER.debug("Receptor IP: central conectada de %s", peer_ip)
+        self._active_writers.add(writer)
         handshake_ok = False
         try:
             while True:
@@ -269,6 +297,16 @@ class ReceptorIPServer:
                     evento = parse_event(
                         parsed.content, with_date=(parsed.command == CMD_EVENT_WITH_DATE)
                     )
+                    _LOGGER.debug(
+                        "Receptor IP: evento recebido de %s — código=%s descrição=%r "
+                        "partição=%s zona_usuario=%s conteúdo_bruto=%s",
+                        peer_ip,
+                        evento["codigo"],
+                        evento["descricao"],
+                        evento["particao"],
+                        evento["zona_usuario"],
+                        parsed.content.hex(" ").upper(),
+                    )
                     handshake_ok = True  # um evento também confirma que é a central de verdade
                     await _maybe_await(self._on_event(evento))
                 else:
@@ -282,6 +320,7 @@ class ReceptorIPServer:
         except (ConnectionResetError, OSError) as err:
             _LOGGER.debug("Receptor IP: conexão com %s encerrada (%s)", peer_ip, err)
         finally:
+            self._active_writers.discard(writer)
             writer.close()
             try:
                 await writer.wait_closed()

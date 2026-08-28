@@ -24,6 +24,7 @@ from .const import (
     DEFAULT_CODE_REQUIRED_DISARM,
     DOMAIN,
     FAMILY_4010,
+    FAMILY_8000,
     MANUFACTURER,
     ZONE_SPEC_FORMAT_HELP,
     InvalidZoneSpec,
@@ -75,12 +76,24 @@ async def async_setup_entry(
         status = coordinator.data
         if status is None or not status.partition_mode_enabled:
             return
-        wanted = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
-        new_entities = [
-            IntelbrasPartitionAlarmPanel(coordinator, entry, p)
-            for p in wanted
-            if p not in partitions_added
-        ]
+        if coordinator.family == FAMILY_8000:
+            # partitions_armed vem chaveado "0".."16" (ver
+            # protocol_amt8000.parse_status) — "0" é a central/geral,
+            # tratada pela entidade IntelbrasCentralAlarmPanel acima;
+            # aqui só criamos as 16 partições numeradas.
+            wanted = [str(n) for n in range(1, 17)]
+            new_entities = [
+                IntelbrasAmt8000PartitionAlarmPanel(coordinator, entry, p)
+                for p in wanted
+                if p not in partitions_added
+            ]
+        else:
+            wanted = ["A", "B", "C", "D"] if coordinator.family == FAMILY_4010 else ["A", "B"]
+            new_entities = [
+                IntelbrasPartitionAlarmPanel(coordinator, entry, p)
+                for p in wanted
+                if p not in partitions_added
+            ]
         if new_entities:
             partitions_added.update(p for p in wanted)
             async_add_entities(new_entities)
@@ -197,18 +210,30 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
     def _resolve_password(
         self, code: str | None, required: bool, partition: str | None = None
     ) -> str:
-        """Decide qual senha vai no comando ISECMobile enviado à central.
+        """Decide qual senha vai no comando enviado à central.
 
         Se a ação exigir código (configurado na inclusão da integração), o
-        valor digitado na UI do Home Assistant é usado **diretamente como a
-        senha do comando** — não é comparado contra a senha memorizada na
-        configuração. Isso permite usar uma senha diferente cadastrada na
-        própria central (ex.: uma senha de usuário secundária, ou a senha
-        específica de uma partição). A central valida a senha; se estiver
-        errada, o comando volta com NACK "Senha incorreta"
-        (``protocol.NackError``), convertido pelo coordinator em um erro
-        exibido na interface do Home Assistant — só é feita uma checagem
-        local de formato (4 a 6 dígitos numéricos), nunca de conteúdo.
+        comportamento muda conforme o protocolo:
+
+        - **ISECMobile** (demais modelos): o valor digitado na UI do Home
+          Assistant é usado **diretamente como a senha do comando** — não
+          é comparado localmente contra nada. Isso permite usar uma senha
+          diferente cadastrada na própria central (ex.: uma senha de
+          usuário secundária, ou a senha específica de uma partição). A
+          central valida a senha; se estiver errada, o comando volta com
+          NACK "Senha incorreta" (``protocol.NackError``).
+        - **AMT 8000**: o comando de arme/desarme (``0x401E``) **não
+          carrega senha nenhuma** — a autenticação acontece uma única vez,
+          na conexão (ver ``protocol_amt8000.cmd_auth``), não por comando.
+          Sem essa diferença tratada aqui, "pedir senha" viraria uma
+          checagem só de formato (4 a 6 dígitos), sem validar o
+          conteúdo — qualquer sequência de dígitos "funcionaria", já que
+          nada digitado chegaria de fato até a central (achado e discutido
+          com o usuário). Por isso, para esta família, o valor digitado é
+          comparado **localmente**, contra a senha já configurada da
+          integração, **antes** de qualquer comando ser enviado — não é a
+          central validando (ela nunca recebe esse valor), é a própria
+          integração.
 
         Quando não exigido, usa a senha configurada para ``partition`` (se
         houver uma específica cadastrada — só possível na 4010, ver
@@ -219,6 +244,9 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
             return self.coordinator.password_for_partition(partition)
         if not code or not (4 <= len(code) <= 6) or not code.isdigit():
             raise HomeAssistantError("Informe uma senha válida (4 a 6 dígitos numéricos)")
+        if self.coordinator.family == FAMILY_8000:
+            if code != self.coordinator.password_for_partition(partition):
+                raise HomeAssistantError("Senha incorreta")
         return code
 
     def _compute_state(
@@ -300,16 +328,18 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
     async def async_read_events_service(self) -> dict:
         """Implementa o serviço `intelbras_alarm.read_events`.
 
-        Lê o log de eventos completo da central (256 registros possíveis,
-        endereço 0x1800-0x2000, comando 0x5C) e devolve todos já
+        Lê o log de eventos completo da central e devolve todos já
         traduzidos na resposta do serviço — não só os mais recentes.
         Como efeito colateral, também atualiza a entidade "Últimos
         eventos" com os mais recentes (independente de quantos vierem na
-        resposta aqui).
+        resposta aqui). Funciona por 3 caminhos possíveis, conforme o
+        modelo/firmware (ver coordinator.async_read_events): comando
+        moderno `0x5C`, protocolo legado `0xE7` (com a senha de leitura
+        configurada), ou o protocolo próprio da AMT 8000.
 
-        Só funciona em modelos/firmwares com acesso a esse comando (ver
-        README) — levanta erro claro nos demais, sem tentar nada na
-        central.
+        Só funciona em modelos/firmwares com acesso a algum desses
+        caminhos (ver README) — levanta erro claro nos demais, sem
+        tentar nada na central.
         """
         eventos = await self.coordinator.async_read_events()
         return {
@@ -318,6 +348,7 @@ class _BaseAlarmPanel(CoordinatorEntity[IntelbrasAlarmCoordinator], AlarmControl
                 {
                     "data_hora": ev["data_hora"].strftime("%d/%m/%Y %H:%M:%S"),
                     "zona_usuario": ev["zona_usuario"],
+                    "nome": ev.get("nome"),
                     "particao": ev["particao"],
                     "codigo": ev["codigo_app"] or f"desconhecido ({ev['codigo_raw']})",
                     "descricao": ev["descricao"],
@@ -387,7 +418,7 @@ class IntelbrasCentralAlarmPanel(_BaseAlarmPanel):
         if not self.coordinator.supports_stay:
             raise HomeAssistantError(
                 "Este modelo não suporta ativação em modo Stay (armed_home) — "
-                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+                "confirmado apenas para AMT 4010 SMART, AMT 2018 E SMART e AMT 8000."
             )
         password = self._resolve_password(code, self._require_code_arm)
         await self.coordinator.async_arm(None, stay=True, password=password)
@@ -454,7 +485,55 @@ class IntelbrasPartitionAlarmPanel(_BaseAlarmPanel):
         if not self.coordinator.supports_stay:
             raise HomeAssistantError(
                 "Este modelo não suporta ativação em modo Stay (armed_home) — "
-                "confirmado apenas para AMT 4010 SMART e AMT 2018 E SMART."
+                "confirmado apenas para AMT 4010 SMART, AMT 2018 E SMART e AMT 8000."
+            )
+        password = self._resolve_password(code, self._require_code_arm, self._partition)
+        await self.coordinator.async_arm(self._partition, stay=True, password=password)
+
+
+class IntelbrasAmt8000PartitionAlarmPanel(_BaseAlarmPanel):
+    """Partição numerada (1-16) da AMT 8000 (protocolo próprio).
+
+    EXPERIMENTAL — ver protocol_amt8000.py e README_DETALHADO.md. Não
+    reaproveita ``IntelbrasPartitionAlarmPanel`` (que usa partições A-D
+    e senhas específicas por partição, próprias do ISECMobile) porque a
+    numeração e a ausência de senha por partição são diferentes o
+    suficiente para justificar uma classe própria — mas reaproveita toda
+    a lógica comum de ``_BaseAlarmPanel`` (cálculo de estado, resolução
+    de senha, serviços de bypass/eventos/comando bruto).
+    """
+
+    def __init__(
+        self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, partition: str
+    ) -> None:
+        super().__init__(coordinator, entry)
+        self._partition = partition
+        self._attr_unique_id = f"{entry.entry_id}_partition_{partition}"
+        self._attr_name = f"Partição {partition}"
+        self._attr_supported_features = AlarmControlPanelEntityFeature.ARM_AWAY
+        if coordinator.supports_stay:
+            self._attr_supported_features |= AlarmControlPanelEntityFeature.ARM_HOME
+
+    @property
+    def alarm_state(self) -> AlarmControlPanelState | None:
+        status = self.coordinator.data
+        if status is None:
+            return None
+        armed = status.partitions_armed.get(self._partition, False)
+        return self._compute_state(armed, self._partition, status.zone_triggered)
+
+    async def async_alarm_disarm(self, code: str | None = None) -> None:
+        password = self._resolve_password(code, self._require_code_disarm, self._partition)
+        await self.coordinator.async_disarm(self._partition, password=password)
+
+    async def async_alarm_arm_away(self, code: str | None = None) -> None:
+        password = self._resolve_password(code, self._require_code_arm, self._partition)
+        await self.coordinator.async_arm(self._partition, stay=False, password=password)
+
+    async def async_alarm_arm_home(self, code: str | None = None) -> None:
+        if not self.coordinator.supports_stay:
+            raise HomeAssistantError(
+                "Este modelo não suporta ativação em modo Stay (armed_home)."
             )
         password = self._resolve_password(code, self._require_code_arm, self._partition)
         await self.coordinator.async_arm(self._partition, stay=True, password=password)

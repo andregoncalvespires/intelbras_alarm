@@ -129,6 +129,47 @@ def montar_comando_leitura(endereco: int, quantidade: int) -> bytes:
     return bytes(frame_sem_checksum + [cs])
 
 
+def montar_comando_status_tensao() -> bytes:
+    """Comando de status/tensão (sub-comando ``[1, 0x17]`` dentro do
+    ``0xE7``) — achado e confirmado pelo usuário contra hardware real
+    (AMT 1016 NET firmware 3.1, AMT 4010 SMART firmware 5.2), mesmo
+    protocolo/CRC/checksum já validados do restante deste módulo, só um
+    sub-comando novo. Requer a mesma autenticação (senha de 6 dígitos)
+    de qualquer outro comando deste protocolo — ver
+    ``montar_comando_autenticar``. Resposta interpretada por
+    ``parse_tensao``, que já leva em conta o formato diferente por
+    família.
+    """
+    corpo = [1, 0x17]
+    crc = calcular_crc(corpo)
+    corpo += [(crc >> 8) & 0xFF, crc & 0xFF]
+    frame = [0xE7] + corpo
+    frame_sem_checksum = [len(frame)] + frame
+    cs = checksum(bytes(frame_sem_checksum))
+    return bytes(frame_sem_checksum + [cs])
+
+
+def parse_tensao(conteudo: bytes, family: str) -> tuple[float, float] | None:
+    """Extrai (tensão da fonte, tensão da bateria) em Volts da resposta
+    de ``montar_comando_status_tensao``.
+
+    Devolve ``None`` se a família não tiver offset confirmado (ver
+    ``const.VOLTAGE_OFFSETS`` — hoje só família 2018 e 4010) ou se a
+    resposta vier curta demais pra alcançar os bytes esperados.
+    """
+    from .const import VOLTAGE_DIVISOR, VOLTAGE_OFFSETS
+
+    offsets = VOLTAGE_OFFSETS.get(family)
+    if offsets is None:
+        return None
+    offset_fonte, offset_bateria = offsets
+    if len(conteudo) < offset_bateria + 2:
+        return None
+    fonte = (conteudo[offset_fonte] * 256 + conteudo[offset_fonte + 1]) / VOLTAGE_DIVISOR
+    bateria = (conteudo[offset_bateria] * 256 + conteudo[offset_bateria + 1]) / VOLTAGE_DIVISOR
+    return fonte, bateria
+
+
 def autenticacao_bem_sucedida(conteudo: bytes) -> bool:
     """``True`` se o byte de status da resposta de autenticação for
     ``0x50`` (sucesso, confirmado contra hardware real e contra o app
@@ -197,8 +238,21 @@ def parse_nomes(dados: bytes) -> NomesLidos:
     for i in range(NAME_TABLE_CAPACITY):
         inicio = base_usuarios + i * NAME_RECORD_SIZE
         nome = limpar(dados[inicio : inicio + NAME_RECORD_SIZE])
-        if nome:
-            usuarios[i + 1] = nome
+        if not nome:
+            continue
+        if i == 0:
+            # CORREÇÃO (bug real, relatado pelo usuário): o primeiro slot
+            # (i=0) não é "usuário 1" — é o usuário "Master" da central,
+            # um registro à parte, sempre presente antes dos usuários
+            # numerados (confirmado numa leitura real de EEPROM, onde o
+            # slot logo após a área de nomes de zona continha literalmente
+            # o texto "Usuario Master"). Atribuir usuarios[1]=nome aqui
+            # deslocava TODA a numeração por um — pedir o nome do usuário
+            # 10 da central devolvia o que estava no slot 9 ("Usuário 09").
+            # Master fica disponível à parte, não como usuário numerado.
+            usuarios[0] = nome  # chave 0 = convenção para "Master" (nunca é um zona_usuario real de evento)
+            continue
+        usuarios[i] = nome
 
     resto = dados[base_usuarios + NAME_TABLE_CAPACITY * NAME_RECORD_SIZE :]
     return NomesLidos(zonas=zonas, usuarios=usuarios, bruto_resto=resto)

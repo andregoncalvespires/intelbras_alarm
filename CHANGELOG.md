@@ -8,6 +8,214 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.1.0-beta]
+
+### Corrigido — Receptor IP parava de vez após recarregar/reconfigurar
+
+Relatado pelo usuário: recarregar ou reconfigurar a integração enquanto
+a central tinha uma conexão ativa no Receptor IP fazia a comunicação
+parar sem erro visível — nem recarregar de novo nem reconfigurar
+resolviam, só um reinício completo do Home Assistant. Causa:
+`asyncio.Server.close()` só impede **novas** conexões, deixando conexões
+já aceitas abertas (comportamento documentado do próprio asyncio) — a
+task da conexão ativa continuava rodando com callbacks apontando pro
+coordinator antigo, e a central seguia mandando eventos pra essa conexão
+órfã sem saber que precisava reconectar. Corrigido rastreando conexões
+ativas e fechando cada uma explicitamente em `async_stop()`.
+
+### Adicionado — retentativas (até 5x) na busca de nomes de zona/usuário
+
+A busca inicial de nomes de zona/usuário, feita uma única vez na
+configuração/recarregamento, agora tenta até 5 vezes (com pausa entre
+cada uma) antes de desistir — cobre instabilidades momentâneas de
+conexão logo após o Home Assistant subir, sem entrar em loop eterno se a
+central genuinamente não estiver respondendo. Novo helper reutilizável
+`_async_retry()` em `__init__.py`.
+
+### Corrigido — bugs reais achados testando a tensão em campo
+
+- **Timer de tensão nunca era criado se a conexão estivesse desligada no
+  (re)carregamento**: religar o switch "Conexão com a central" depois
+  não resolvia (não havia timer nenhum para retomar) — só um reinício
+  completo do Home Assistant "consertava". Corrigido: o timer de 5
+  minutos agora é sempre registrado, independente do estado da conexão
+  no momento do (re)carregamento; `async_refresh_voltage()` verifica
+  sozinho se a conexão está habilitada e sai em silêncio quando não
+  está (sem gerar aviso repetido a cada 5 minutos à toa). O switch
+  também passou a buscar a tensão imediatamente ao religar, em vez de
+  esperar até 5 minutos pelo próximo ciclo.
+- **Timeouts esporádicos na consulta de status normal**, coincidindo
+  sistematicamente com múltiplos de 5 minutos (relatado com logs reais)
+  — indício de que a central precisa de um instante para se recompor
+  depois da troca autenticada via `0xE7` antes de responder prontamente
+  ao próximo `0x5A`/`0x5B` do polling rápido. Mitigado com uma pausa de
+  acomodação de 1 segundo após a consulta de tensão, antes de liberar a
+  conexão de volta pro polling normal — heurística baseada na
+  correlação observada, não uma medição exata; acompanhar os logs após
+  esta versão para confirmar se o problema foi resolvido ou só reduzido.
+
+### Adicionado — nome (zona/usuário) também no serviço `read_events`
+
+O serviço `intelbras_alarm.read_events` e a entidade "Últimos eventos"
+agora resolvem o nome da zona/usuário no campo `nome` de cada evento,
+mesma lógica já usada nas mensagens do Receptor IP (`codigo` → tipo →
+`zone_names`/`user_names`) — extraída para um método único e
+compartilhado (`coordinator._resolver_nome_por_codigo()`) para evitar
+duplicar a regra entre os dois lugares. Funciona nos 3 caminhos de
+leitura de eventos (`0x5C`, protocolo legado `0xE7`, AMT 8000).
+
+### Alterado — tela de configuração e serviço `read_events`
+
+- Campo "Senha de leitura de mensagens" renomeado para "Senha acesso
+  App AMT Remoto", com o texto de orientação atualizado mencionando
+  também a leitura de tensão como um dos usos dessa senha.
+- Descrição do serviço `read_events` simplificada — focada em
+  requisitos e comportamento, sem detalhes de implementação (comando,
+  endereço de memória) que não ajudam quem só quer usar o serviço.
+
+### Adicionado — tensão da fonte e da bateria (sub-comando `[1, 0x17]`, `0xE7`)
+
+Duas entidades novas (`sensor`): **"Tensão da fonte"** e **"Tensão da
+bateria"**, atualizadas a cada 5 minutos. Achado e confirmado pelo
+usuário contra hardware real, em dois modelos diferentes:
+- AMT 1016 NET, firmware 3.1 (família 2018): fonte 14,49V, bateria 13,66V
+- AMT 4010 SMART, firmware 5.2 (família 4010 — funciona mesmo essa
+  família normalmente usando `0x5C` para nomes/eventos): fonte 13,58V,
+  bateria 0,00V (central testada sem bateria conectada)
+
+- Novo sub-comando dentro do mesmo `0xE7` já usado para nomes/eventos
+  legados (`[1, 0x17]`, não é leitura de EEPROM — consulta de status
+  direta), mesma autenticação/CRC/checksum já validados.
+- Disponível **só com a senha de leitura de 6 dígitos configurada**
+  (`coordinator.supports_voltage_reading`) — independente de
+  `supports_extended_eeprom`/`supports_legacy_eeprom`, confirmado
+  funcionando mesmo em modelos com `0x5C` disponível. Inclui a ANM 24
+  Net por extrapolação de família (decisão do usuário — nunca testado
+  especificamente nesse modelo; falha de forma silenciosa se não
+  funcionar). Não se aplica à AMT 8000 (protocolo totalmente diferente).
+- Consulta roda **fora** do polling rápido de status, em agendamento
+  próprio de 5 minutos (`async_track_time_interval`) — evita
+  autenticações repetidas desnecessárias no mesmo ritmo do status.
+  Reaproveita a mesma conexão persistente; a fila (lock) já existente
+  evita qualquer risco de concorrência com o polling normal.
+- **Bug real corrigido antes de publicar**: o offset da família 4010
+  havia sido transcrito errado por 1 byte numa etapa manual anterior
+  (`(23, 25)` em vez do correto `(22, 24)`) — só percebido ao testar o
+  parser de ponta a ponta contra os dois exemplos reais fornecidos
+  pelo usuário, que só então bateram exatamente com os valores
+  reportados.
+
+Primeira versão de `main` a incluir suporte experimental à **AMT 8000**
+(consolidado a partir do branch `dev`, onde foi desenvolvido e testado
+isoladamente ao longo de várias versões `2.1.0-dev.N`), além de uma
+melhoria nova no Receptor IP.
+
+### Adicionado — AMT 8000 (experimental, protocolo próprio)
+
+⚠️ **Nada desta seção foi validado contra hardware real** — toda a
+implementação vem de engenharia reversa (decompilação do app oficial
+AMT Remoto v3.4.2.2) cruzada com um fluxo Node-RED de terceiros usado
+como referência. Ver README_DETALHADO.md, seção "AMT 8000
+(experimental)", para o detalhe técnico completo, o que já foi
+confirmado por projetos de terceiros (`fdaneluzzi/homeassistant-amt8000`)
+e o que ainda depende de teste em campo.
+
+- **Protocolo de transporte totalmente separado do ISECMobile** —
+  framing próprio (`[0x00 0x00][srcId][0x00][LEN][opcode][conteúdo]
+  [checksum]`), autenticação de sessão (`0xF0F0`, uma vez por conexão,
+  não por comando), opcodes próprios para status, arme/desarme, bypass
+  (individual por zona, diferente do comando absoluto do ISECMobile),
+  PGM, pânico, leitura de eventos (buffer circular de até 512 posições)
+  e sincronização de nomes (central/zona/usuário/partição/PGM/teclado/
+  sirene). Módulos novos: `protocol_amt8000.py`, `panel_client_amt8000.py`.
+- **Configuração manual, não detecção automática**: opção "AMT 8000
+  (protocolo experimental)" na tela inicial — precisa ser marcada
+  explicitamente; os demais modelos continuam com a sondagem automática
+  de sempre, sem nenhuma mudança de comportamento.
+- **16 partições numeradas** (não A-D como o ISECMobile) — nova classe
+  `IntelbrasAmt8000PartitionAlarmPanel`.
+- **"Pedir senha para ativar/desativar" tratado com segurança**: como o
+  comando de arme/desarme desta central não carrega senha nenhuma (a
+  autenticação é só da conexão), a integração agora compara o valor
+  digitado **localmente** contra a senha configurada antes de agir —
+  sem essa correção, qualquer sequência de dígitos "funcionaria" para
+  armar/desarmar com essa opção marcada (achado real durante a
+  consolidação, não só uma inconsistência de UX).
+- **Entidade `camera` nova** ("Foto de evento") — sensores com câmera
+  desta central. ⚠️ Incompleta: existe e funciona com segurança (mostra
+  "sem imagem disponível"), mas ainda não consegue baixar uma foto de
+  verdade — falta identificar com confiança um campo do protocolo.
+- Zonas com falha de comunicação RF (`zones_comm_failure`) expostas como
+  atributo extra nas entidades de zona já existentes — vazio `{}` nas
+  demais famílias.
+- Valores confirmados em hardware real por um projeto de terceiros
+  (`fdaneluzzi/homeassistant-amt8000`) durante a consolidação:
+  `AMT8000_ALL_PARTITIONS = 0xFF` (não `0`) e `AMT8000_STATUS_MAX_LEN =
+  143` bytes de conteúdo (não 152, que era o tamanho do frame completo).
+
+### Adicionado — nomes de usuário nas mensagens do Receptor IP
+
+- Nomes de usuário agora são lidos junto com os de zona (mesma
+  sincronização, mesmo botão/gatilho automático) — antes, o caminho
+  legado (`0xE7`) já extraía esses nomes e descartava; o caminho
+  moderno (`0x5C`) ganhou uma leitura nova, no endereço logo após o
+  último slot de zona do modelo.
+- Mensagens de evento do Receptor IP agora mostram o **nome** (zona ou
+  usuário, conforme o tipo de evento) em vez do número cru, quando
+  disponível — novo dict `const.RECEPTOR_IP_EVENT_SUBJECT` decide qual
+  tabela consultar. Sem nome carregado, continua mostrando o número,
+  como antes.
+
+### Atualizado — tabela de códigos de evento do Receptor IP: 68 → 132 códigos
+
+Substituída por uma tabela de referência mais completa (132 códigos,
+fornecida pelo usuário, com um campo "tipo" próprio por código —
+`ZONE`/`USER`/`USER_PARTITION`/`PGM`/`SYSTEM`/`BUS_DEVICE`). Os 68
+códigos anteriores continuam todos presentes, com a descrição
+atualizada quando a fonte nova trouxe uma redação diferente.
+
+- `const.RECEPTOR_IP_EVENT_SUBJECT` recalculada a partir do campo
+  "tipo" da fonte nova (antes: 38 códigos classificados manualmente
+  numa planilha; agora: 64, incluindo uma categoria nova, **PGM**, que
+  não existia antes — ainda sem efeito prático, já que esta integração
+  não tem uma tabela de nomes de PGM para consultar).
+- **Corrigidas 3 classificações que a planilha anterior tinha errado**:
+  `3110` (restauração de disparo/pânico de incêndio) era "zona", na
+  verdade é "usuário" — mesma classificação do disparo original
+  (`1110`). `1570`/`1573` (anulação temporária / anulação por disparo)
+  eram "usuário", na verdade são "zona" — faz mais sentido semântico,
+  já que se anula zonas, não usuários.
+- **Corrigido um significado real, não só uma redação**: `1333`/`3333`
+  eram documentados como "Problema/Restauração em teclado ou receptor"
+  — a fonte nova (com um campo de categoria próprio, `BUS_DEVICE`)
+  mostra que são na verdade "Falha/Recuperação de dispositivo de
+  barramento", um conceito diferente. Adotada a fonte nova por decisão
+  do usuário.
+
+### Corrigido — nomes de usuário deslocados por um (bug real, achado em testes)
+
+O primeiro slot de usuário na EEPROM (logo após os nomes de zona) não é
+o usuário 1 — é o registro **"Usuário Master"** da central, um slot à
+parte. As duas leituras de nomes de usuário (`0x5C` e o protocolo
+legado `0xE7`, que compartilham a mesma memória física) tratavam esse
+slot como se fosse o usuário 1, deslocando toda a numeração por um —
+pedir o nome do usuário 10 da central devolvia o que estava no slot 9
+("Usuário 09"). Achado pelo usuário testando a v2.1.0-beta numa AMT
+1016 NET real (protocolo legado).
+
+- `protocol_legacy_eeprom.parse_nomes()`: slot 0 agora reservado para o
+  Master (chave `0`, nunca usada por um evento real), usuários
+  numerados começam corretamente do slot 1.
+- `coordinator.async_refresh_zone_names()` (caminho `0x5C`): endereço
+  de leitura deslocado em 16 bytes (pula o slot do Master), capacidade
+  reduzida em 1 pelo mesmo motivo.
+- Testado com dados simulados reproduzindo o layout real (Master +
+  usuários numerados) nos dois caminhos — resultado correto nos dois.
+- Também adicionado: log de depuração para eventos recebidos pelo
+  Receptor IP (`receptor_ip.py`, evento bruto recebido;
+  `coordinator.py`, resultado do enriquecimento com nome) — ausente
+  até então, dificultava diagnosticar esse tipo de problema.
+
 ## [2.0.3]
 
 ### Corrigido

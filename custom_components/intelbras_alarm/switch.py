@@ -9,7 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import IntelbrasAlarmData
-from .const import DOMAIN, MANUFACTURER, PGM_ADDRESSES
+from .const import DOMAIN, FAMILY_8000, MANUFACTURER, PGM_ADDRESSES
 from .coordinator import IntelbrasAlarmCoordinator
 from .panel_client import PanelClient
 
@@ -21,10 +21,12 @@ async def async_setup_entry(
     coordinator = data.coordinator
     client = data.client
 
-    entities: list[SwitchEntity] = [
-        IntelbrasSirenSwitch(coordinator, entry),
-        IntelbrasConnectionSwitch(client, coordinator, entry),
-    ]
+    entities: list[SwitchEntity] = [IntelbrasConnectionSwitch(client, coordinator, entry)]
+    if coordinator.family != FAMILY_8000:
+        # Nenhum comando de liga/desliga sirene foi confirmado para a AMT
+        # 8000 ainda (ver coordinator.async_set_siren) — a entidade não é
+        # criada para esta família, em vez de existir e sempre falhar.
+        entities.append(IntelbrasSirenSwitch(coordinator, entry))
     for pgm in range(1, coordinator.pgm_count + 1):
         entities.append(IntelbrasPgmSwitch(coordinator, entry, pgm))
 
@@ -143,6 +145,11 @@ class IntelbrasConnectionSwitch(SwitchEntity):
         # de CPU alta com o switch desligado) e já pede um ciclo novo.
         self._coordinator.resume_polling()
         await self._coordinator.async_request_refresh()
+        if self._coordinator.supports_voltage_reading:
+            # Não espera até 5 minutos pro próximo ciclo periódico pegar
+            # a reconexão — busca já, pra feedback imediato na UI (ver
+            # coordinator.async_refresh_voltage).
+            await self._coordinator.async_refresh_voltage()
 
     async def async_turn_off(self, **kwargs) -> None:
         from .connection_state import async_save_connection_enabled

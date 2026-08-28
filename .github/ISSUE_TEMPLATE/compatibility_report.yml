@@ -34,6 +34,9 @@ body:
         - ANM 24 Net
         - ANM 24 Net G2
         - AMT 4010 SMART
+        - AMT 8000
+        - AMT 8000 Lite
+        - AMT 8000 Pro
         - Outro (descreva abaixo)
     validations:
       required: true

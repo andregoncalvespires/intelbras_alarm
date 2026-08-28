@@ -398,6 +398,11 @@ class IntelbrasZoneBinarySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Bi
             attrs["tamper"] = status.zones_tamper[self._zone]
         if self._zone in status.zones_short_circuit:
             attrs["curto_circuito"] = status.zones_short_circuit[self._zone]
+        if self._zone in status.zones_comm_failure:
+            # Só populado na AMT 8000 (sensores sem fio/RF) — ver
+            # protocol_amt8000.py. Vazio {} nas demais famílias, então
+            # este atributo simplesmente não aparece para elas.
+            attrs["falha_comunicacao_rf"] = status.zones_comm_failure[self._zone]
 
         # AMT 2018 E SMART: atributos extras só disponíveis pra zonas
         # 25-48 (a central trata 1-24 como sempre cabeadas) — ver

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import PERCENTAGE, UnitOfElectricPotential
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -62,6 +62,12 @@ async def async_setup_entry(
     if coordinator.model_key == MODEL_2018_SMART:
         entities.append(IntelbrasESmartNetworkSensor(coordinator, entry))
         entities.append(IntelbrasESmartCellularSensor(coordinator, entry))
+    # Tensão da fonte/bateria — só quando a senha de leitura de 6
+    # dígitos está configurada E a família tem offset confirmado (ver
+    # coordinator.supports_voltage_reading e const.VOLTAGE_OFFSETS).
+    if coordinator.supports_voltage_reading:
+        entities.append(IntelbrasSourceVoltageSensor(coordinator, entry))
+        entities.append(IntelbrasBatteryVoltageSensor(coordinator, entry))
     async_add_entities(entities)
 
 
@@ -88,6 +94,57 @@ class IntelbrasBatterySensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Senso
         if self.coordinator.data is None:
             return None
         return self.coordinator.data.battery_level
+
+
+class IntelbrasSourceVoltageSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Tensão da fonte de alimentação (comando ``[1, 0x17]`` dentro do
+    ``0xE7``, ver ``coordinator.supports_voltage_reading``).
+
+    Atualizada a cada 5 minutos, num agendamento próprio, **não** a cada
+    ciclo do polling rápido de status (ver ``coordinator.async_refresh_voltage``
+    e ``__init__.py``) — evita autenticações repetidas desnecessárias.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Tensão da fonte"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
+    _attr_suggested_display_precision = 2
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_tensao_fonte"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.tensao_fonte
+
+
+class IntelbrasBatteryVoltageSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Tensão da bateria interna (comando ``[1, 0x17]`` dentro do ``0xE7``,
+    ver ``coordinator.supports_voltage_reading``).
+
+    Mesma cadência de atualização de ``IntelbrasSourceVoltageSensor`` (5
+    em 5 minutos) — as duas vêm juntas na mesma resposta.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Tensão da bateria"
+    _attr_device_class = SensorDeviceClass.VOLTAGE
+    _attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
+    _attr_suggested_display_precision = 2
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_tensao_bateria"
+        self._attr_device_info = _device_info(entry)
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.tensao_bateria
 
 
 _ZONE_COUNT_FIELDS = {
@@ -301,7 +358,12 @@ class IntelbrasReceptorLastEventSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
         if evento["particao"] != "-":
             partes.append(f"Partição {evento['particao']}")
         if evento["zona_usuario"] > 0:
-            partes.append(f"Zona/Usuário {evento['zona_usuario']}")
+            # Usa o nome (zona ou usuário) quando temos — ver
+            # coordinator.on_receptor_event() e const.RECEPTOR_IP_EVENT_SUBJECT.
+            # Sem nome disponível (não é um evento de zona/usuário, ou não
+            # temos esse nome carregado), mostra só o número, como sempre.
+            nome = evento.get("nome")
+            partes.append(nome if nome else f"Zona/Usuário {evento['zona_usuario']}")
         # Mantém dentro do limite de 255 caracteres de um estado do HA —
         # folgado aqui, mas evita qualquer risco se a descrição crescer.
         return " — ".join(partes)[:255]
@@ -316,6 +378,7 @@ class IntelbrasReceptorLastEventSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
             "conta": evento["conta"],
             "particao": evento["particao"],
             "zona_usuario": evento["zona_usuario"],
+            "nome": evento.get("nome"),
         }
         if evento["data_hora_evento"] is not None:
             attrs["data_hora_evento"] = evento["data_hora_evento"].strftime("%d/%m/%Y %H:%M:%S")

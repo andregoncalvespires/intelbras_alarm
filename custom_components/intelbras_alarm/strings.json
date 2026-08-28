@@ -8,20 +8,22 @@
           "host": "Endereço IP",
           "port": "Porta",
           "password": "Senha (4 a 6 dígitos)",
+          "amt8000_mode": "AMT 8000 (protocolo experimental)",
           "code_required_arm": "Pedir a senha para ATIVAR (armar) pelo Home Assistant",
           "code_required_disarm": "Pedir a senha para DESATIVAR (desarmar) pelo Home Assistant",
           "enabled_zones": "Zonas habilitadas por padrão",
           "receptor_ip_enabled": "Habilitar recepção de eventos (Receptor IP)",
           "receptor_ip_port": "Porta de escuta do Receptor IP",
-          "legacy_eeprom_password": "Senha de leitura de mensagens (6 dígitos, opcional)"
+          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)"
         },
         "data_description": {
+          "amt8000_mode": "Marque somente se sua central for uma AMT 8000 — usa um protocolo próprio ainda em desenvolvimento e teste (ver README_DETALHADO.md, seção \"AMT 8000 (experimental)\"). Deixe desmarcado para os demais modelos (2018/1016/4010), que continuam com detecção automática.",
           "code_required_arm": "Desmarcado (padrão): ativa com um toque, sem digitar nada. Marcado: pede a senha antes de ativar.",
           "code_required_disarm": "Desmarcado (padrão): desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar — recomendado se você quer uma trava extra nessa ação, a mais sensível das duas.",
           "enabled_zones": "Formato: intervalos e/ou números separados por ; (ex.: 1-5;8;10-15). As zonas fora dessa lista continuam existindo, só ficam desabilitadas até você ativá-las manualmente em Configurações → Entidades.",
           "receptor_ip_enabled": "Desmarcado (padrão): desligado, nenhuma porta é aberta. Marcado: a central pode se conectar aqui e empurrar eventos em tempo real — precisa configurar a central separadamente (fora desta tela) apontando para o IP do Home Assistant e a porta abaixo. Veja o README para o passo a passo completo.",
           "receptor_ip_port": "Porta em que o Home Assistant vai ficar esperando a central se conectar (não confundir com a porta da central, acima) — precisa ser a mesma configurada na central. Só importa se a opção acima estiver marcada.",
-          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo) -- é a mesma senha de 6 dígitos (\"Senha Acesso Remoto\") pedida pelo app AMT Mobile para sincronizar nomes de zona/usuário. Se o seu modelo já tem acesso normal a essa função, este campo não tem efeito."
+          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\")."
         }
       },
       "partition_passwords": {
@@ -58,7 +60,7 @@
           "polling_interval": "Intervalo de consulta de status (segundos)",
           "receptor_ip_enabled": "Habilitar recepção de eventos (Receptor IP)",
           "receptor_ip_port": "Porta de escuta do Receptor IP",
-          "legacy_eeprom_password": "Senha de leitura de mensagens (6 dígitos, opcional)"
+          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)"
         },
         "data_description": {
           "password": "A nova senha é validada contra a própria central antes de ser salva.",
@@ -66,7 +68,7 @@
           "code_required_disarm": "Desmarcado: desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar.",
           "receptor_ip_enabled": "Desmarcado (padrão): desligado, nenhuma porta é aberta. Marcado: a central pode se conectar aqui e empurrar eventos em tempo real — precisa configurar a central separadamente (fora desta tela) apontando para o IP do Home Assistant e a porta abaixo. Veja o README para o passo a passo completo.",
           "receptor_ip_port": "Porta em que o Home Assistant vai ficar esperando a central se conectar — precisa ser a mesma configurada na central. Só importa se a opção acima estiver marcada.",
-          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo) -- é a mesma senha de 6 dígitos (\"Senha Acesso Remoto\") pedida pelo app AMT Mobile para sincronizar nomes de zona/usuário. Se o seu modelo já tem acesso normal a essa função, este campo não tem efeito."
+          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\")."
         }
       },
       "partition_passwords": {

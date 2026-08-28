@@ -1,12 +1,15 @@
 """Integração Home Assistant para centrais de alarme Intelbras (ISECNet/ISECMobile)."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.event import async_track_time_interval
 
 from .connection_state import async_load_connection_enabled
 from .const import (
@@ -19,9 +22,11 @@ from .const import (
     DEFAULT_RECEPTOR_IP_PORT,
     DEFAULT_REQUEST_TIMEOUT,
     DOMAIN,
+    FAMILY_8000,
 )
 from .coordinator import IntelbrasAlarmCoordinator
 from .panel_client import PanelClient
+from .panel_client_amt8000 import PanelClientAmt8000
 from .receptor_ip import ReceptorIPServer
 
 _LOGGER = logging.getLogger(__name__)
@@ -32,14 +37,57 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.SENSOR,
     Platform.BUTTON,
+    Platform.CAMERA,
 ]
 
 
 @dataclass
 class IntelbrasAlarmData:
-    client: PanelClient
+    client: PanelClient | PanelClientAmt8000
     coordinator: IntelbrasAlarmCoordinator
     receptor_server: ReceptorIPServer | None = None
+
+
+async def _async_retry(
+    func, *, tentativas: int = 5, espera_segundos: float = 3.0, descricao: str
+) -> bool:
+    """Tenta ``func()`` (uma corrotina) até ``tentativas`` vezes, com uma
+    pequena pausa entre cada uma — sem loop eterno, propositalmente (ver
+    pedido do usuário: garantir os dados sem insistir indefinidamente).
+
+    Usado para leituras únicas feitas na configuração inicial (ex.: nomes
+    de zona/usuário) que podem falhar por instabilidade momentânea da
+    conexão logo após o Home Assistant subir — comum o suficiente para
+    justificar mais de uma tentativa, mas sem sentido tentar para sempre
+    se a central genuinamente não está respondendo.
+
+    Devolve ``True`` se alguma tentativa teve sucesso, ``False`` se todas
+    falharam (never levanta exceção — quem chama decide o que fazer/logar
+    com o resultado).
+    """
+    for tentativa in range(1, tentativas + 1):
+        try:
+            await func()
+            return True
+        except Exception as err:  # noqa: BLE001
+            if tentativa == tentativas:
+                _LOGGER.warning(
+                    "%s: falhou após %d tentativas (%s)",
+                    descricao,
+                    tentativas,
+                    err,
+                )
+                return False
+            _LOGGER.debug(
+                "%s: tentativa %d/%d falhou (%s), tentando de novo em %.0fs",
+                descricao,
+                tentativa,
+                tentativas,
+                err,
+                espera_segundos,
+            )
+            await asyncio.sleep(espera_segundos)
+    return False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -49,12 +97,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # e não abrir nenhum socket com a central neste (re)carregamento.
     connection_enabled = await async_load_connection_enabled(hass, entry.entry_id)
 
-    client = PanelClient(
-        entry.data["host"],
-        entry.data["port"],
-        timeout=DEFAULT_REQUEST_TIMEOUT,
-        enabled=connection_enabled,
-    )
+    family = entry.data["family"]
+    client: PanelClient | PanelClientAmt8000
+    if family == FAMILY_8000:
+        # EXPERIMENTAL — ver protocol_amt8000.py e panel_client_amt8000.py.
+        client = PanelClientAmt8000(
+            entry.data["host"],
+            entry.data["port"],
+            entry.data[CONF_PASSWORD],
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            enabled=connection_enabled,
+        )
+    else:
+        client = PanelClient(
+            entry.data["host"],
+            entry.data["port"],
+            timeout=DEFAULT_REQUEST_TIMEOUT,
+            enabled=connection_enabled,
+        )
 
     coordinator = IntelbrasAlarmCoordinator(
         hass,
@@ -70,13 +130,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await coordinator.async_config_entry_first_refresh()
 
         if coordinator.supports_extended_eeprom or coordinator.supports_legacy_eeprom:
+            await _async_retry(
+                coordinator.async_refresh_zone_names,
+                descricao="Busca de nomes de zona/usuário na configuração inicial",
+            )
+
+        if coordinator.supports_voltage_reading:
             try:
-                await coordinator.async_refresh_zone_names()
+                await coordinator.async_refresh_voltage()
             except Exception:  # noqa: BLE001
                 _LOGGER.warning(
-                    "Não foi possível buscar os nomes de zona na configuração inicial; "
-                    "use o botão de sincronização para tentar novamente."
+                    "Não foi possível ler a tensão da fonte/bateria na configuração "
+                    "inicial; nova tentativa em 5 minutos."
                 )
+
+    if coordinator.supports_voltage_reading:
+        # Tensão da fonte/bateria (comando [1, 0x17] dentro do 0xE7, ver
+        # coordinator.async_refresh_voltage) — deliberadamente fora do
+        # polling rápido de status: exige autenticação própria a cada
+        # leitura, então roda só a cada 5 minutos, num agendamento
+        # próprio, independente do DataUpdateCoordinator principal.
+        #
+        # Registrado AQUI, fora do "if connection_enabled" acima (bug
+        # real corrigido, relatado pelo usuário): se a conexão estivesse
+        # desligada neste (re)carregamento, o timer nunca chegava a ser
+        # criado — e religar o switch depois não resolvia, porque não
+        # havia timer nenhum para retomar. async_refresh_voltage() já
+        # verifica client.enabled sozinho e sai em silêncio quando
+        # desligado, então é seguro sempre agendar aqui.
+        async def _async_refresh_voltage_periodico(now) -> None:
+            await coordinator.async_refresh_voltage()
+
+        entry.async_on_unload(
+            async_track_time_interval(hass, _async_refresh_voltage_periodico, timedelta(minutes=5))
+        )
     else:
         # Não chamamos async_config_entry_first_refresh(): ele levantaria
         # ConfigEntryNotReady (pois o client recusa comandos desabilitado),
