@@ -1328,6 +1328,30 @@ alguns minutos, mas ficou sem responder tanto pela integração quanto
 pelo app oficial nesse meio tempo). Ver a seção "Limitações conhecidas"
 mais abaixo para os detalhes dessa investigação.
 
+#### Persistência dos nomes (`names_state.py`)
+
+**Bug real corrigido** (relatado pelo usuário): `coordinator.zone_names`/
+`user_names` viviam só na memória do processo — qualquer reinício do
+Home Assistant os zerava. Sequência observada: conexão desligada →
+reinício do HA → religar a conexão → nomes nunca mais eram buscados
+automaticamente (nada disparava uma nova sincronização ao religar), e
+as entidades caíam de volta nos nomes genéricos ("Zona 01" etc.), mesmo
+com os nomes reais ainda intactos na EEPROM da central.
+
+Corrigido com o mesmo padrão de persistência já usado em
+`connection_state.py` (`homeassistant.helpers.storage.Store`, um
+arquivo JSON próprio em `.storage/`, independente de
+`ConfigEntry.options`):
+- Toda sincronização bem-sucedida (automática ou pelo botão) salva o
+  resultado em disco.
+- No (re)carregamento, o que estiver salvo é carregado **antes** de
+  qualquer tentativa de conexão.
+- A sincronização automática só roda quando **nunca** houve uma
+  sincronização salva antes (primeira configuração de verdade) —
+  evita que uma tentativa que falha ou é pulada sobrescreva nomes bons
+  por nomes genéricos em qualquer (re)carregamento seguinte. Combinada
+  com `_async_retry()` (até 5 tentativas) para a tentativa inicial.
+
 **Nomes de zona**: endereço `0x0800 + (zona-1) × 16`, registros ASCII de
 16 bytes terminados em `NUL`. Lidos em lotes de 12 zonas (192 bytes,
 limite por leitura do comando `0x5C`). Um padrão de fábrica (`A,B,C,D...`

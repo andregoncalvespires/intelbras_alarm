@@ -10,6 +10,34 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Corrigido — nomes de zona/usuário voltavam ao genérico após reinício
+
+Relatado pelo usuário: desligar a conexão com a central, reiniciar o
+Home Assistant e religar a conexão fazia as entidades caírem de volta
+nos nomes genéricos ("Zona 01" etc.), mesmo com os nomes reais ainda
+intactos na EEPROM da central. Causa raiz: `zone_names`/`user_names`
+só existiam na memória do processo — qualquer reinício os zerava — e
+nada disparava uma nova sincronização automática ao religar a conexão
+manualmente.
+
+Corrigido com persistência própria (`names_state.py`, mesmo padrão já
+usado em `connection_state.py` — `homeassistant.helpers.storage.Store`,
+independente de `ConfigEntry.options`):
+- Os nomes lidos com sucesso (automaticamente ou pelo botão
+  "Sincronizar nomes de zona") agora são salvos em disco, sobrevivendo
+  a reinícios/reloads/reconfigurações.
+- No (re)carregamento, os nomes salvos são carregados **antes** de
+  qualquer tentativa de conexão — as entidades já nascem com o nome
+  certo, mesmo sem rede.
+- A sincronização automática só é tentada quando **nunca** houve uma
+  sincronização bem-sucedida antes (primeira configuração de verdade,
+  detectada pela ausência de qualquer dado salvo) — evita o risco de
+  uma tentativa que falha ou é pulada (conexão desligada) sobrescrever
+  nomes bons por nomes genéricos. Combinada com a lógica de
+  retentativas (até 5x) já existente.
+- O botão manual continua funcionando sempre, e cada sincronização
+  bem-sucedida por ele atualiza o que fica salvo.
+
 ### Corrigido — Receptor IP parava de vez após recarregar/reconfigurar
 
 Relatado pelo usuário: recarregar ou reconfigurar a integração enquanto

@@ -25,6 +25,7 @@ from .const import (
     FAMILY_8000,
 )
 from .coordinator import IntelbrasAlarmCoordinator
+from .names_state import async_load_names
 from .panel_client import PanelClient
 from .panel_client_amt8000 import PanelClientAmt8000
 from .receptor_ip import ReceptorIPServer
@@ -126,10 +127,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         partition_passwords=entry.data.get(CONF_PARTITION_PASSWORDS),
     )
 
+    # Carrega os nomes de zona/usuário já salvos de uma sincronização
+    # anterior (se houver) — ANTES de qualquer coisa que dependa de
+    # conexão, já que é só leitura de um arquivo local. Bug real
+    # corrigido (relatado pelo usuário): antes disso, desligar a conexão,
+    # reiniciar o Home Assistant e religar deixava as entidades com nomes
+    # genéricos pra sempre, mesmo com os nomes reais intactos na EEPROM —
+    # nada disparava uma nova sincronização ao religar. Ver names_state.py.
+    nomes_persistidos = await async_load_names(hass, entry.entry_id)
+    if nomes_persistidos is not None:
+        coordinator.zone_names, coordinator.user_names = nomes_persistidos
+        _LOGGER.debug(
+            "Nomes de zona/usuário carregados do último estado salvo (%d zonas, "
+            "%d usuários) — sincronização automática não será tentada; use o "
+            "botão \"Sincronizar nomes de zona\" para atualizar manualmente.",
+            len(coordinator.zone_names),
+            len(coordinator.user_names),
+        )
+
     if connection_enabled:
         await coordinator.async_config_entry_first_refresh()
 
-        if coordinator.supports_extended_eeprom or coordinator.supports_legacy_eeprom:
+        if nomes_persistidos is None and (
+            coordinator.supports_extended_eeprom or coordinator.supports_legacy_eeprom
+        ):
+            # Só tenta automaticamente quando NUNCA houve uma
+            # sincronização bem-sucedida antes (primeira configuração de
+            # verdade) — em qualquer (re)carregamento seguinte, confia no
+            # que já foi carregado acima (ou no botão manual), sem
+            # arriscar sobrescrever nomes bons por uma tentativa que pode
+            # falhar ou ser pulada.
             await _async_retry(
                 coordinator.async_refresh_zone_names,
                 descricao="Busca de nomes de zona/usuário na configuração inicial",

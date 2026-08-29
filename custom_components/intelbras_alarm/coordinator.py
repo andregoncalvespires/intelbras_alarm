@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from homeassistant.util import dt as dt_util
 
 from . import protocol_legacy_eeprom as legacy_eeprom
+from .names_state import async_save_names
 from .const import (
     ACK_OK,
     AMT8000_ALL_PARTITIONS,
@@ -1342,6 +1343,25 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # Nomes de zona (EEPROM, apenas família 4010)
     # ------------------------------------------------------------------
     async def async_refresh_zone_names(self) -> dict[int, str]:
+        """Lê os nomes de todas as zonas gravados na EEPROM da central e
+        persiste o resultado, para sobreviver a reinícios do Home
+        Assistant sem precisar reconsultar a central toda vez — ver
+        ``names_state.py`` para o motivo (bug real, relatado pelo
+        usuário: nomes voltavam ao genérico após desligar a conexão,
+        reiniciar o HA e religar).
+        """
+        resultado = await self._async_refresh_zone_names_impl()
+        try:
+            await async_save_names(self.hass, self.entry.entry_id, self.zone_names, self.user_names)
+        except Exception as err:  # noqa: BLE001
+            # Nunca deixa uma falha ao SALVAR (ex.: disco cheio, sem
+            # permissão) invalidar a sincronização que acabou de dar
+            # certo — os nomes continuam corretos nesta sessão, só não
+            # sobreviveriam a um reinício até a próxima sincronização.
+            _LOGGER.warning("Não foi possível salvar os nomes de zona/usuário para persistência: %s", err)
+        return resultado
+
+    async def _async_refresh_zone_names_impl(self) -> dict[int, str]:
         """Lê os nomes de todas as zonas gravados na EEPROM da central."""
         if self.supports_legacy_eeprom:
             return await self._async_refresh_zone_names_legacy()
