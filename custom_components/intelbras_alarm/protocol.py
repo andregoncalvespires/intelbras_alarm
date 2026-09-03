@@ -350,7 +350,18 @@ class PanelStatus:
     aux_overload: bool
     battery_level: int
     pgm_state: dict[int, bool]
-    panel_datetime_str: str | None  # "dd/mm/aaaa hh:mm" já formatado, decodificado de BCD
+    panel_datetime_str: str | None  # "dd/mm/aaaa hh:mm" já formatado, decodificado de BCD.
+    # Faz parte normal da comparação de igualdade (usada por
+    # always_update=False, ver __init__ do coordinator) — de propósito:
+    # é um dado real que a central está reportando, então uma mudança
+    # de minuto genuinamente reflete a central respondendo algo
+    # diferente, mesmo que nenhum sensor tenha mudado — cadência baixa
+    # o suficiente (no máximo 1x/minuto, para as famílias 2018/4010,
+    # que só têm precisão de minuto mesmo) para não valer a pena
+    # excluir. Only a AMT 8000 precisava de tratamento à parte, ver
+    # protocol_amt8000.py — corrigido lá, não aqui, truncando pra
+    # minuto antes de chegar neste campo (ela reporta segundo, o que
+    # sem esse truncamento causaria até 60 atualizações por minuto).
     siren_wire_cut: bool
     siren_short_circuit: bool
     phone_line_cut: bool

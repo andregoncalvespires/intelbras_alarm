@@ -326,11 +326,22 @@ def parse_status(content: bytes) -> PanelStatus:
     siren_short_circuit = bool((b(44) >> 1) & 1)  # sc
     siren_wire_cut = bool((b(44) >> 0) & 1)  # scf
 
-    # Data/hora da central — BCD, offsets 65 (dia) a 70 (segundo). Ao
-    # contrário do fluxo de referência (que zera/ignora o segundo só para
-    # evitar ruído de diff num comparador de buffer bruto — ver histórico
-    # do projeto), aqui lemos com precisão total: o Home Assistant já
-    # trata atualização de estado por valor computado, não por buffer.
+    # Data/hora da central — BCD, offsets 65 (dia) a 70 (segundo).
+    #
+    # Truncado para precisão de MINUTO (segundo lido mas descartado do
+    # texto final) — corrigido numa revisão pontual, apontada pelo
+    # usuário: esta central é a ÚNICA família que reporta segundo (as
+    # demais só têm minuto — ver protocol._format_panel_datetime). Sem
+    # truncar, panel_datetime_str mudaria a cada segundo, e por fazer
+    # parte normal da comparação de igualdade usada por
+    # always_update=False (ver __init__ do coordinator), isso causaria
+    # até 60 notificações por minuto só por causa do relógio — mesmo
+    # com a central 100% parada, sem nenhum sensor mudando de verdade.
+    # Restaura o comportamento do fluxo de referência original (que já
+    # zerava/ignorava o segundo por esse mesmo motivo), depois de uma
+    # decisão anterior neste projeto ter optado por precisão total —
+    # decisão que fazia sentido antes de existir always_update=False,
+    # mas não depois.
     panel_datetime_str: str | None = None
     try:
         year = 2000 + _bcd(b(67))
@@ -340,7 +351,7 @@ def parse_status(content: bytes) -> PanelStatus:
         minute = _bcd(b(69))
         second = _bcd(b(70))
         panel_datetime_str = datetime(year, month, day, hour, minute, second).strftime(
-            "%d/%m/%Y %H:%M:%S"
+            "%d/%m/%Y %H:%M"
         )
     except ValueError:
         panel_datetime_str = None

@@ -10,6 +10,38 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Corrigido — AMT 8000 gerava até 60 atualizações/minuto por causa do segundo no relógio
+
+Revisão adicional da melhoria de `always_update=False` (ver seção
+acima) — discussão com o usuário esclareceu um ponto importante: a
+data/hora da central **deve** continuar fazendo parte normal da
+comparação de igualdade (não deve ser excluída) — é um dado real
+reportado pela central, então uma mudança de minuto genuinamente
+reflete uma resposta diferente, mesmo sem nenhum sensor mudando. As
+famílias 2018/4010 já são naturalmente de precisão só de minuto (ver
+`protocol._format_panel_datetime`), então isso já resultava numa
+cadência baixa (no máximo 1x/minuto) e correta.
+
+A **AMT 8000** era a exceção real: sua resposta de status inclui
+precisão de **segundo**, e uma decisão anterior deste projeto (antes
+de existir `always_update=False`, quando isso ainda não fazia
+diferença prática) optou por ler essa precisão total, revertendo uma
+escolha original do fluxo de referência que zerava/ignorava o segundo
+por esse mesmo motivo. Sem corrigir isso, `panel_datetime_str` mudaria
+a cada segundo, gerando até 60 notificações desnecessárias por minuto
+mesmo sem nenhuma mudança real — justamente o problema que
+`always_update=False` deveria evitar.
+
+Corrigido em `protocol_amt8000.py`: o segundo continua sendo lido e
+validado (garante que os 6 bytes de data/hora são consistentes), mas o
+texto final (`panel_datetime_str`) agora usa o mesmo formato de
+precisão de minuto das demais famílias ("dd/mm/aaaa hh:mm", sem
+segundo) — restaurando o comportamento original do fluxo de
+referência, agora pela razão certa. Testado de ponta a ponta contra
+`parse_status()` real: segundos diferentes dentro do mesmo minuto
+produzem o mesmo `PanelStatus` (`==` verdadeiro); uma mudança de
+minuto de verdade continua sendo detectada normalmente.
+
 ### Melhoria — evita reescritas de estado desnecessárias (`always_update=False`)
 
 Achado numa revisão pontual, cruzando com o blog oficial da Home
