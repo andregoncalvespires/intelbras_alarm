@@ -1246,6 +1246,38 @@ qualquer uso avulso (status, comandos do usuário, leituras via `0x5C`
 — que não têm conceito de sessão, cada comando já embute a própria
 senha).
 
+#### Duas camadas de filtro para evitar reescritas de estado desnecessárias
+
+A cada ciclo de polling (0,25s por padrão), a integração **sempre**
+pergunta o status pra central e **sempre** recebe/interpreta a
+resposta completa — não existe (nem faria sentido existir, dado que a
+central não avisa sozinha quando algo muda) nenhum jeito de "pular" a
+pergunta em si. O que existe são duas camadas, em sequência, que
+decidem se vale a pena **notificar o Home Assistant** depois que a
+resposta já chegou:
+
+1. **Filtro na resposta bruta** (`coordinator._resposta_bruta_mudou()`)
+   — compara os bytes crus da resposta atual contra os da última
+   resposta válida, ANTES de interpretar. Se forem idênticos,
+   reaproveita o `PanelStatus` já existente em vez de reprocessar do
+   zero — evita até o trabalho de interpretação, não só a notificação.
+2. **Filtro no resultado interpretado** (`always_update=False` no
+   `DataUpdateCoordinator`, ver seção "Melhoria" no CHANGELOG.md) —
+   compara o `PanelStatus` (novo ou reaproveitado da camada 1) contra
+   o anterior; só notifica as entidades se forem diferentes.
+
+⚠️ **Cuidado que se repete nas duas camadas**: a AMT 8000 é a única
+família cuja resposta inclui precisão de **segundo** (as demais só têm
+minuto). Sem tratamento especial, o byte/campo do segundo faria a
+resposta parecer sempre diferente, mesmo sem nenhuma mudança real —
+até 60 "mudanças" falsas por minuto. Resolvido nos dois níveis
+independentemente: `protocol_amt8000.normalizar_status_para_comparacao()`
+zera o byte do segundo (offset 70) antes da comparação bruta (camada
+1); `protocol_amt8000.parse_status()` trunca `panel_datetime_str` para
+precisão de minuto no texto final (camada 2). Nos dois casos, o
+segundo continua sendo lido/validado normalmente — só não entra na
+comparação.
+
 ### Dois timeouts diferentes, para dois problemas diferentes
 
 Até uma versão anterior, um único valor (8s, herdado do item 5 da

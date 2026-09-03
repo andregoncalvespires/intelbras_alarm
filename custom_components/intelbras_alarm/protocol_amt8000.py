@@ -273,6 +273,27 @@ def _bcd(value: int) -> int:
     return ((value & 0xF0) >> 4) * 10 + (value & 0x0F)
 
 
+def normalizar_status_para_comparacao(content: bytes) -> bytes:
+    """Devolve uma cópia de ``content`` com o byte do segundo (offset 70)
+    zerado — usado para comparar duas respostas de status ignorando a
+    granularidade de segundo, exclusiva desta família (as demais só têm
+    minuto — ver ``coordinator._async_update_data``, onde essa função é
+    usada antes de decidir se vale a pena reinterpretar a resposta, e
+    ``parse_status`` acima, mesma razão para truncar ``panel_datetime_str``
+    a minuto).
+
+    Sem essa normalização, comparar bytes brutos diretamente faria a
+    AMT 8000 parecer "sempre diferente" a cada segundo, mesmo sem
+    nenhuma mudança real — reintroduzindo, num nível mais baixo, o
+    mesmo problema já corrigido na comparação por campos interpretados.
+    """
+    if len(content) <= 70:
+        return content
+    normalizado = bytearray(content)
+    normalizado[70] = 0
+    return bytes(normalizado)
+
+
 def parse_status(content: bytes) -> PanelStatus:
     """Interpreta o blob de status completo (~152 bytes) devolvido por ``0x0B4A``."""
     def b(offset: int) -> int:

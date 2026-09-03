@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from homeassistant.config_entries import ConfigEntry
@@ -167,6 +168,16 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # no polling — sugestão do usuário: dá pra ver a sequência inteira
         # sem precisar de log, como atributo do sensor "Último comando".
         self.last_status_raw: str | None = None
+        # Cache dos bytes brutos (não hex — bytes mesmo) da última
+        # resposta de status válida, usado para filtrar ANTES de
+        # interpretar (ver _resposta_bruta_mudou()) — pedido explícito do
+        # usuário: comparar a resposta bruta, não só o resultado já
+        # interpretado (que já era comparado via always_update=False, ver
+        # __init__ acima). Guarda os bytes VERDADEIROS (não normalizados)
+        # mesmo para a AMT 8000 — a normalização (zerar o byte de
+        # segundo) é aplicada só na hora de comparar, não no que fica
+        # guardado aqui.
+        self._last_raw_status_content: bytes | None = None
         # Os três campos abaixo só são atualizados por comandos REAIS
         # (armar, desarmar, PGM, sirene, pânico, bypass) — nunca pela
         # consulta de status, que roda a cada ciclo de polling (0,25s por
@@ -498,6 +509,38 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             return self._password
         return self._partition_passwords.get(partition) or self._password
 
+    def _resposta_bruta_mudou(
+        self, content: bytes, *, normalizar: Callable[[bytes], bytes] | None = None
+    ) -> bool:
+        """Filtro na resposta BRUTA (bytes), antes de interpretar —
+        pedido explícito do usuário, complementar ao filtro que já
+        existe em ``always_update=False`` (que compara o resultado JÁ
+        interpretado, ``PanelStatus``). Aqui a comparação acontece um
+        passo antes: evita até o trabalho de interpretar a resposta
+        quando os bytes já indicam que não há nada de novo.
+
+        ``normalizar``, se dado, é aplicado nos dois lados (bytes novos
+        e bytes em cache) antes de comparar — único uso disto hoje é a
+        AMT 8000, cuja resposta inclui segundo (as demais famílias só
+        têm minuto): sem normalizar, o byte do segundo faria a resposta
+        parecer sempre diferente, mesmo sem nenhuma mudança real,
+        reintroduzindo no nível de bytes o mesmo problema já corrigido
+        no nível de campos interpretados (ver
+        ``protocol_amt8000.normalizar_status_para_comparacao``).
+
+        Sempre atualiza o cache para os bytes recebidos AGORA (nunca os
+        normalizados) — o cache reflete sempre a última resposta válida
+        de verdade, não uma versão "editada"; a normalização é só uma
+        lente aplicada na hora de comparar, nunca no que fica guardado.
+        """
+        anterior = self._last_raw_status_content
+        self._last_raw_status_content = content
+        if anterior is None:
+            return True  # nunca teve nada em cache ainda — primeira leitura
+        if normalizar is not None:
+            return normalizar(content) != normalizar(anterior)
+        return content != anterior
+
     async def _async_update_data(self) -> PanelStatus:
         if not self.client.enabled:
             # Switch "Conexão com a central" desligado deliberadamente pelo
@@ -573,9 +616,19 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                         f"{response.content.hex(' ').upper()}"
                     )
 
-            status = parse_status(response.content, self.family)
-            if self.model_key == MODEL_2018_SMART:
-                self.esmart_extra = parse_status_2018_esmart_extra(response.content)
+            # Filtro na resposta BRUTA, antes de interpretar — pedido
+            # explícito do usuário, complementar ao always_update=False
+            # (que já filtra o resultado interpretado). Sempre chama
+            # _resposta_bruta_mudou() mesmo quando já sabemos que vamos
+            # reinterpretar de qualquer forma — ela também atualiza o
+            # cache como efeito colateral, então precisa rodar sempre.
+            resposta_mudou = self._resposta_bruta_mudou(response.content)
+            if not resposta_mudou and self.data is not None:
+                status = self.data
+            else:
+                status = parse_status(response.content, self.family)
+                if self.model_key == MODEL_2018_SMART:
+                    self.esmart_extra = parse_status_2018_esmart_extra(response.content)
         except (PanelConnectionError, UpdateFailed, IndexError, ValueError) as err:
             self._handle_poll_failure(err)
             # _handle_poll_failure() levanta UpdateFailed se a falha não for
@@ -616,9 +669,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # Só produz saída com o logger desta integração em nível DEBUG
         # (ver README, seção "Diagnóstico").
         _LOGGER.debug(
-            "status recebido: conteúdo=%s | activated(central)=%s partitions_armed=%s "
+            "status recebido: conteúdo=%s | %sactivated(central)=%s partitions_armed=%s "
             "zone_triggered=%s siren_on=%s problem=%s",
             response.content.hex(" ").upper(),
+            "(bruto inalterado, reaproveitado sem reinterpretar) " if not resposta_mudou else "",
             status.activated,
             status.partitions_armed,
             status.zone_triggered,
@@ -667,7 +721,20 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     f"{response.content.hex(' ').upper()}"
                 )
 
-            status = amt8000.parse_status(response.content)
+            # Filtro na resposta BRUTA, antes de interpretar — mesmo
+            # mecanismo do caminho 2018/4010 (ver _async_update_data),
+            # mas com normalização: essa família reporta segundo (as
+            # demais só têm minuto), então comparar bytes crus sem
+            # normalizar faria a resposta parecer sempre diferente a
+            # cada segundo, mesmo sem nenhuma mudança real — ver
+            # protocol_amt8000.normalizar_status_para_comparacao().
+            resposta_mudou = self._resposta_bruta_mudou(
+                response.content, normalizar=amt8000.normalizar_status_para_comparacao
+            )
+            if not resposta_mudou and self.data is not None:
+                status = self.data
+            else:
+                status = amt8000.parse_status(response.content)
         except (*_ANY_PANEL_CONNECTION_ERROR, UpdateFailed, IndexError, ValueError) as err:
             self._handle_poll_failure(err)
             if self.data is not None:
@@ -689,9 +756,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self._last_poll_success_monotonic = time.monotonic()
 
         _LOGGER.debug(
-            "AMT 8000 status recebido: conteúdo=%s | activated=%s partitions_armed=%s "
+            "AMT 8000 status recebido: conteúdo=%s | %sactivated=%s partitions_armed=%s "
             "zone_triggered=%s siren_on=%s problem=%s",
             response.content.hex(" ").upper(),
+            "(bruto inalterado, reaproveitado sem reinterpretar) " if not resposta_mudou else "",
             status.activated,
             status.partitions_armed,
             status.zone_triggered,

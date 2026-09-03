@@ -10,6 +10,42 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Adicionado — filtro na resposta bruta, antes de interpretar (complementar ao `always_update=False`)
+
+Segunda camada de filtro, pedida explicitamente pelo usuário depois de
+esclarecer onde o filtro anterior (`always_update=False`, ver seção
+abaixo) realmente acontece: **inteiramente dentro do Home Assistant**,
+depois da resposta já ter sido recebida E interpretada num
+`PanelStatus` — nunca ao receber da central. A pergunta que motivou
+esta mudança: dava pra filtrar antes, comparando os bytes brutos da
+resposta, evitando até o trabalho de interpretar quando nada mudou?
+
+Novo método `coordinator._resposta_bruta_mudou()`: compara os bytes
+crus da resposta atual contra os da última resposta válida recebida —
+`0x5A`/`0x5B` (famílias 2018/4010) e `0x0B4A` (AMT 8000). Se forem
+idênticos, reaproveita o `PanelStatus` já existente em vez de
+reinterpretar do zero; se diferentes (ou na primeira leitura, sem nada
+em cache ainda), interpreta normalmente. Aplicado nos dois pontos de
+entrada existentes (`_async_update_data` e `_async_update_data_amt8000`).
+
+**Cuidado que o usuário pediu explicitamente para não esquecer**: a
+AMT 8000 é a única família cuja resposta bruta inclui o segundo do
+relógio (as demais só têm minuto) — comparar bytes crus sem tratar
+isso especificamente reintroduziria, agora no nível de bytes, o
+EXATO MESMO problema já corrigido no nível de campos interpretados
+(ver seção anterior sobre a correção de segundo/minuto): até 60
+"mudanças" falsas por minuto, só por causa do segundo mudando. Nova
+função `protocol_amt8000.normalizar_status_para_comparacao()` zera o
+byte do segundo (offset 70) antes de comparar — só usado para decidir
+se vale a pena reinterpretar; o que fica guardado em cache continua
+sendo os bytes verdadeiros, não os normalizados.
+
+Testado: extraído o método `_resposta_bruta_mudou()` diretamente do
+arquivo publicado (via AST, não uma reimplementação à parte) e
+executado contra 5 cenários — primeira leitura, bytes idênticos, bytes
+diferentes, AMT 8000 com só o segundo mudando (deve ignorar) e AMT
+8000 com outro byte mudando (deve detectar) — todos corretos.
+
 ### Corrigido — AMT 8000 gerava até 60 atualizações/minuto por causa do segundo no relógio
 
 Revisão adicional da melhoria de `always_update=False` (ver seção
