@@ -221,6 +221,28 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             _LOGGER,
             name=f"Intelbras Alarm ({entry.title})",
             update_interval=timedelta(seconds=entry.options.get("polling_interval", 0.25)),
+            # Evita notificar/reescrever o estado de todas as entidades a
+            # cada ciclo quando nada mudou de verdade — comportamento
+            # padrão do DataUpdateCoordinator é sempre notificar, mesmo
+            # sem mudança (ver blog oficial da Home Assistant, "Avoid
+            # unnecessary callbacks with DataUpdateCoordinator", 2023-07-27).
+            # Especialmente relevante aqui: polling a cada 0,25s (4x/s) —
+            # bem mais frequente que o caso típico do artigo — então a
+            # central provavelmente reporta o MESMO status na grande
+            # maioria dos ciclos (casa parada). Requer que PanelStatus
+            # tenha __eq__ funcionando corretamente por comparação de
+            # valor — já tem, de graça, por ser uma @dataclass simples
+            # (testado isoladamente antes de aplicar esta mudança).
+            #
+            # ⚠️ Ressalva conhecida: `last_status_raw` (bytes brutos da
+            # última resposta, exposto como atributo de diagnóstico em
+            # sensor.py) vive FORA do PanelStatus e é atualizado a cada
+            # ciclo — se algum byte não capturado por nenhum campo que
+            # interpretamos mudar sem nenhum campo PARSEADO mudar junto
+            # (bem incomum), esse atributo específico pode ficar parado
+            # até a próxima mudança real. Atributo puramente de
+            # diagnóstico, sem efeito em nenhuma lógica de automação.
+            always_update=False,
         )
         # Guardado à parte pra poder restaurar depois de pause_polling()
         # (ver logo abaixo) — self.update_interval pode ser zerado

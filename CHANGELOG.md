@@ -10,6 +10,36 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Melhoria — evita reescritas de estado desnecessárias (`always_update=False`)
+
+Achado numa revisão pontual, cruzando com o blog oficial da Home
+Assistant ("Avoid unnecessary callbacks with DataUpdateCoordinator",
+2023-07-27): o comportamento **padrão** do `DataUpdateCoordinator` é
+notificar/reescrever o estado de todas as entidades a cada ciclo,
+**mesmo quando o dado não mudou** — a otimização (`always_update=False`)
+existe, mas precisa ser configurada explicitamente, o que esta
+integração não fazia.
+
+Especialmente relevante para esta integração: polling a cada 0,25s
+(4x/segundo) — bem mais frequente que o caso típico do artigo — então
+a central provavelmente reporta o mesmo status na grande maioria dos
+ciclos (casa parada). Requer que a classe de dados suporte comparação
+de igualdade por valor — `protocol.PanelStatus` já tem isso "de graça"
+por ser uma `@dataclass` simples (testado isoladamente antes de
+aplicar: duas instâncias com os mesmos valores comparam como iguais,
+com um campo diferente comparam como diferentes). Confirmado também
+lendo o código-fonte do próprio `DataUpdateCoordinator` instalado: com
+`always_update=False`, a notificação só acontece quando o sucesso da
+consulta muda de estado *ou* os dados realmente mudam.
+
+Ressalva conhecida e documentada no código: `coordinator.last_status_raw`
+(bytes brutos da última resposta, exposto como atributo de diagnóstico
+em "Último comando") vive fora do `PanelStatus` e é atualizado a cada
+ciclo — num cenário bem incomum (algum byte não capturado por nenhum
+campo interpretado mudando sozinho), esse atributo específico poderia
+ficar parado até a próxima mudança real. Atributo puramente de
+diagnóstico, sem efeito em nenhuma lógica de automação.
+
 ### Adicionado — entidades de partições armadas ausente/presente
 
 Duas entidades novas (`sensor`): **"Partições armadas ausente"** e
