@@ -1209,6 +1209,43 @@ leitura ou escrita falhar (timeout, reset, etc.), o socket é fechado e a
 **próxima** requisição reabre a conexão automaticamente — nunca há
 desconexão proposital a cada ciclo de polling.
 
+#### Transações atômicas (`transaction()` / `send_command_in_transaction()`)
+
+**Bug real corrigido** (achado via análise cruzada de log em produção +
+revisão de arquitetura): `send_command()` sozinho adquire e libera o
+lock **a cada chamada individual** — adequado para comandos avulsos
+(status, arme/desarme, PGM), mas insuficiente para sequências como a
+do protocolo `0xE7` (autenticação seguida de um ou mais comandos, usada
+na consulta de tensão e na leitura legada de nomes/eventos), que
+precisam ser tratadas como uma única transação lógica. Sem essa
+garantia, o `asyncio.sleep()` entre a autenticação e o comando
+seguinte deixava uma janela real em que o polling rápido de status (a
+cada 0,25s) podia se intercalar **no meio** da troca autenticada —
+confirmado como a causa real de timeouts esporádicos na consulta de
+status, que apareciam sistematicamente no mesmo instante exato de cada
+ciclo de 5 minutos da consulta de tensão.
+
+`PanelClient.transaction()` devolve o próprio `asyncio.Lock` (já
+utilizável diretamente como `async with`), e
+`send_command_in_transaction()` é a mesma lógica de `send_command()`
+mas sem adquirir o lock sozinho — só deve ser chamada de dentro de um
+bloco `async with client.transaction():`. Uso:
+
+```python
+async with self.client.transaction():
+    r1 = await self.client.send_command_in_transaction(frame_auth, context="...")
+    await asyncio.sleep(DELAY)
+    r2 = await self.client.send_command_in_transaction(frame, context="...")
+```
+
+Usado em `coordinator.async_refresh_voltage()` e
+`coordinator._async_legacy_eeprom_session()` — os dois únicos pontos
+que usam o protocolo `0xE7` com autenticação de sessão.
+`send_command()` continua funcionando exatamente como antes para
+qualquer uso avulso (status, comandos do usuário, leituras via `0x5C`
+— que não têm conceito de sessão, cada comando já embute a própria
+senha).
+
 ### Dois timeouts diferentes, para dois problemas diferentes
 
 Até uma versão anterior, um único valor (8s, herdado do item 5 da
@@ -1804,13 +1841,19 @@ com o polling normal.
   registrado; `async_refresh_voltage()` verifica sozinho
   `self.client.enabled` e sai em silêncio (sem log) quando desligado.
 - Timeouts esporádicos na consulta de status normal, coincidindo
-  sistematicamente com múltiplos de 5 minutos — a análise inicial
-  ("no pior caso, levemente atrasado") **subestimou o impacto real**;
-  a central aparentemente precisa de um instante para se recompor
-  depois da troca autenticada via `0xE7` antes de voltar a responder
-  prontamente ao polling rápido. Mitigado com uma pausa de acomodação
-  de 1 segundo logo após a consulta de tensão — heurística baseada na
-  correlação observada nos logs, não uma medição exata da causa raiz.
+  sistematicamente com o **mesmo instante exato** de cada ciclo de 5
+  minutos (não distribuídos aleatoriamente — confirmado com um segundo
+  log em produção). A mitigação inicial (pausa de acomodação de 1s
+  após a consulta de tensão) não resolveu — o problema não era a
+  central precisar "se recompor" **depois** da troca, era o polling
+  rápido de status conseguir se intercalar **durante** ela: cada
+  comando da sequência autenticada (`0xE7`) soltava o lock
+  individualmente, deixando uma janela real no `asyncio.sleep()` entre
+  a autenticação e o comando seguinte. Corrigido com um mecanismo de
+  transação atômica em `panel_client.py` (`transaction()` +
+  `send_command_in_transaction()`) — a sequência inteira agora mantém
+  o lock do início ao fim, sem intercalar. Ver seção própria mais
+  abaixo para o detalhe completo.
 
 **Ainda em aberto**: os endereços acima só foram confirmados numa
 central real (1016 NET); os três códigos de evento vistos numa leitura

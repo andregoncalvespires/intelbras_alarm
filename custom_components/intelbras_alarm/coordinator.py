@@ -504,8 +504,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             return await self._async_update_data_amt8000()
 
         try:
+            t_inicio_status = time.monotonic()
             response = await self.client.send_command(
                 _build_status_frame(self._password, self.family, self.model_key), context="consulta de status"
+            )
+            _LOGGER.debug(
+                "Consulta de status: respondida em %.3fs", time.monotonic() - t_inicio_status
             )
             if not response.valid_checksum:
                 raise UpdateFailed("Checksum inválido na resposta de status")
@@ -1167,48 +1171,75 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
         ``paginas_info`` é uma lista de (endereço, tamanho) — ver
         ``protocol_legacy_eeprom.paginas()``.
+
+        Toda a sessão (autenticação + todas as páginas) roda dentro de
+        uma única transação atômica (ver
+        ``panel_client.PanelClient.transaction()``) — mesma correção
+        aplicada em ``async_refresh_voltage()``, pelo mesmo motivo: sem
+        isso, o polling rápido de status podia se intercalar no meio da
+        troca autenticada. Aqui o impacto é mais raro na prática (só
+        roda na configuração inicial ou por pedido manual — botão de
+        sincronizar, ou serviço ``read_events`` —, nunca continuamente a
+        cada poucos segundos como a tensão), mas o risco de intercalar
+        no meio de uma sessão `0xE7` é o mesmo.
         """
-        frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
+        t_inicio = time.monotonic()
         try:
-            resposta_auth = await self.client.send_command(
-                frame_auth, context="identificação (senha de leitura de mensagens)"
-            )
+            async with self.client.transaction():
+                frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
+                resposta_auth = await self.client.send_command_in_transaction(
+                    frame_auth, context="identificação (senha de leitura de mensagens)"
+                )
+                _LOGGER.debug(
+                    "Sessão legada 0xE7: autenticação respondida em %.3fs",
+                    time.monotonic() - t_inicio,
+                )
+                if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+                    raise HomeAssistantError(
+                        "Falha na identificação com a senha de leitura de mensagens "
+                        "configurada — confira se está correta (6 dígitos, "
+                        "\"Senha Acesso Remoto\" no app AMT Mobile)"
+                    )
+                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+
+                dados = bytearray()
+                for endereco, tamanho in paginas_info:
+                    frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
+                    t_pagina = time.monotonic()
+                    resposta = await self.client.send_command_in_transaction(
+                        frame, context=f"leitura legada de EEPROM 0x{endereco:04X}"
+                    )
+                    _LOGGER.debug(
+                        "Sessão legada 0xE7: página 0x%04X respondida em %.3fs "
+                        "(%.3fs desde o início da sessão)",
+                        endereco,
+                        time.monotonic() - t_pagina,
+                        time.monotonic() - t_inicio,
+                    )
+                    if not resposta.valid_checksum:
+                        raise UpdateFailed(
+                            f"Checksum inválido lendo EEPROM legada no endereço 0x{endereco:04X}"
+                        )
+                    # content = [2 bytes de cabeçalho, sempre presentes nesse
+                    # protocolo — confirmados em toda captura real analisada,
+                    # não dependem do endereço] + dados úteis. Ver
+                    # README_DETALHADO.md, seção "Protocolo legado".
+                    dados_uteis = legacy_eeprom.extrair_dados_leitura(resposta.content, tamanho)
+                    if dados_uteis is None:
+                        raise UpdateFailed(
+                            f"Resposta incompleta lendo EEPROM legada no endereço "
+                            f"0x{endereco:04X}: recebidos {len(resposta.content)} bytes de "
+                            f"conteúdo, esperados pelo menos {2 + tamanho}"
+                        )
+                    dados += dados_uteis
+                    await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
         except PanelConnectionError as err:
             raise UpdateFailed(str(err)) from err
-        if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
-            raise HomeAssistantError(
-                "Falha na identificação com a senha de leitura de mensagens "
-                "configurada — confira se está correta (6 dígitos, "
-                "\"Senha Acesso Remoto\" no app AMT Mobile)"
-            )
-        await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
-
-        dados = bytearray()
-        for endereco, tamanho in paginas_info:
-            frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
-            try:
-                resposta = await self.client.send_command(
-                    frame, context=f"leitura legada de EEPROM 0x{endereco:04X}"
-                )
-            except PanelConnectionError as err:
-                raise UpdateFailed(str(err)) from err
-            if not resposta.valid_checksum:
-                raise UpdateFailed(
-                    f"Checksum inválido lendo EEPROM legada no endereço 0x{endereco:04X}"
-                )
-            # content = [2 bytes de cabeçalho, sempre presentes nesse
-            # protocolo — confirmados em toda captura real analisada,
-            # não dependem do endereço] + dados úteis. Ver
-            # README_DETALHADO.md, seção "Protocolo legado".
-            dados_uteis = legacy_eeprom.extrair_dados_leitura(resposta.content, tamanho)
-            if dados_uteis is None:
-                raise UpdateFailed(
-                    f"Resposta incompleta lendo EEPROM legada no endereço "
-                    f"0x{endereco:04X}: recebidos {len(resposta.content)} bytes de "
-                    f"conteúdo, esperados pelo menos {2 + tamanho}"
-                )
-            dados += dados_uteis
-            await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+        _LOGGER.debug(
+            "Sessão legada 0xE7: concluída em %.3fs (%d páginas)",
+            time.monotonic() - t_inicio,
+            len(paginas_info),
+        )
         return bytes(dados)
 
     async def async_refresh_voltage(self) -> None:
@@ -1251,20 +1282,41 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # principal de status.
             return
         try:
-            frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
-            resposta_auth = await self.client.send_command(
-                frame_auth, context="identificação (consulta de tensão)"
-            )
-            if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
-                _LOGGER.warning(
-                    "Consulta de tensão: falha na identificação com a senha de leitura "
-                    "configurada — tentando de novo em 5 minutos"
+            # Transação atômica (ver panel_client.PanelClient.transaction())
+            # — bug real corrigido: autenticação + consulta antes rodavam
+            # como duas chamadas separadas de send_command(), cada uma
+            # soltando o lock — deixando uma janela real, durante o
+            # asyncio.sleep() entre elas, em que o polling rápido de
+            # status podia se intercalar NO MEIO da troca autenticada.
+            t_inicio = time.monotonic()
+            async with self.client.transaction():
+                frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
+                resposta_auth = await self.client.send_command_in_transaction(
+                    frame_auth, context="identificação (consulta de tensão)"
                 )
-                return
-            await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+                _LOGGER.debug(
+                    "Consulta de tensão: autenticação enviada e respondida em %.3fs",
+                    time.monotonic() - t_inicio,
+                )
+                if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+                    _LOGGER.warning(
+                        "Consulta de tensão: falha na identificação com a senha de leitura "
+                        "configurada — tentando de novo em 5 minutos"
+                    )
+                    return
+                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
 
-            frame = legacy_eeprom.montar_comando_status_tensao()
-            resposta = await self.client.send_command(frame, context="consulta de tensão")
+                frame = legacy_eeprom.montar_comando_status_tensao()
+                t_antes_consulta = time.monotonic()
+                resposta = await self.client.send_command_in_transaction(
+                    frame, context="consulta de tensão"
+                )
+                _LOGGER.debug(
+                    "Consulta de tensão: comando de tensão enviado e respondido em %.3fs "
+                    "(%.3fs desde o início da transação)",
+                    time.monotonic() - t_antes_consulta,
+                    time.monotonic() - t_inicio,
+                )
             # Pausa de acomodação (heurística, não uma medição exata):
             # timeouts reais na consulta de status normal foram
             # observados sistematicamente coincidindo com múltiplos de 5

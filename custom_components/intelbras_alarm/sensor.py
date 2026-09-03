@@ -51,6 +51,12 @@ async def async_setup_entry(
             name="Zonas com bateria baixa",
             icon="mdi:battery-alert-variant-outline",
         ),
+        IntelbrasPartitionArmModeSensor(
+            coordinator, entry, stay=False, name="Partições armadas ausente", icon="mdi:shield-lock-outline"
+        ),
+        IntelbrasPartitionArmModeSensor(
+            coordinator, entry, stay=True, name="Partições armadas presente", icon="mdi:shield-home-outline"
+        ),
         IntelbrasLastCommandResultSensor(coordinator, entry),
         IntelbrasRecentEventsSensor(coordinator, entry),
         IntelbrasReceptorLastEventSensor(coordinator, entry),
@@ -205,6 +211,66 @@ class IntelbrasZoneCountSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], Sen
                 for zone in zones
             ]
         return attrs
+
+
+class IntelbrasPartitionArmModeSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Contador de partições atualmente ativadas em determinado modo
+    (ausente/presente — ``armed_away``/``armed_home``).
+
+    Análogo a ``IntelbrasZoneCountSensor``, mas para partições — útil
+    pra saber rapidamente, num resumo só, quais partições estão em modo
+    Stay (``armed_home``) sem precisar checar cada `alarm_control_panel`
+    individualmente. Usa ``status.partitions_armed`` (o que a central
+    reporta de verdade) como fonte da existência/estado "ativada" de
+    cada partição — não ``coordinator.armed_home_mode`` sozinho, que só
+    reflete o que foi comandado *por esta integração*: uma partição
+    ativada pelo teclado físico ou por outro app antes do Home Assistant
+    subir não teria uma entrada lá, mas aparece normalmente em
+    ``partitions_armed``. ``armed_home_mode`` só é usado para decidir
+    *qual* dos dois modos, quando a partição já está confirmada como
+    ativada — mesmo critério e mesmo padrão (default "ausente" se nunca
+    rastreado) que ``_BaseAlarmPanel._compute_state()`` já usa para o
+    estado de cada `alarm_control_panel` individual.
+
+    Partições com disparo em andamento (``zone_triggered``) não entram
+    em nenhuma das duas contagens — mesmo critério de
+    ``_compute_state()``, onde "disparada" é um estado à parte, não uma
+    variação de "ativada".
+    """
+
+    _attr_has_entity_name = True
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = "partições"
+    _attr_state_class = "measurement"
+
+    def __init__(
+        self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry, *, stay: bool, name: str, icon: str
+    ) -> None:
+        super().__init__(coordinator)
+        self._stay = stay
+        self._attr_unique_id = f"{entry.entry_id}_partitions_armed_{'home' if stay else 'away'}"
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_device_info = _device_info(entry)
+
+    def _particoes_no_modo(self) -> list[str]:
+        status = self.coordinator.data
+        if status is None or status.zone_triggered:
+            return []
+        resultado = [
+            particao
+            for particao, ativada in status.partitions_armed.items()
+            if ativada and self.coordinator.armed_home_mode.get(particao, False) == self._stay
+        ]
+        return sorted(resultado)
+
+    @property
+    def native_value(self) -> int:
+        return len(self._particoes_no_modo())
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        return {"particoes": self._particoes_no_modo()}
 
 
 class IntelbrasLastCommandResultSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):

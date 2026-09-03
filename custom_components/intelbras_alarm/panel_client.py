@@ -116,6 +116,41 @@ class PanelClient:
         self._reader = None
         self._writer = None
 
+    def transaction(self) -> asyncio.Lock:
+        """Context manager que mantém o lock adquirido por toda a duração
+        de um bloco ``async with``, para sequências de comandos que
+        precisam ser tratadas como **uma transação atômica** — ex.:
+        autenticação seguida de consulta em protocolos com sessão
+        (``0xE7``, usado tanto na leitura de tensão quanto na leitura
+        legada de nomes/eventos).
+
+        BUG REAL corrigido (achado via análise cruzada de log + revisão
+        de arquitetura, com ajuda de outra IA consultada pelo usuário):
+        antes desta correção, cada etapa de uma sequência assim (ex.:
+        autenticar, esperar, consultar) chamava ``send_command()``
+        normalmente — que adquire e libera o lock a cada chamada
+        individual. Isso deixava uma janela real (o ``asyncio.sleep()``
+        entre as etapas) em que o polling rápido de status (a cada
+        0,25s) podia se intercalar NO MEIO da troca autenticada,
+        possivelmente confundindo o estado de sessão da central e
+        causando lentidão/timeout nas respostas seguintes — bate com o
+        padrão observado em produção: timeouts na consulta de status
+        aconteciam sistematicamente no mesmo instante exato de cada
+        ciclo de 5 minutos da consulta de tensão, não distribuídos
+        aleatoriamente.
+
+        Uso:
+            async with client.transaction():
+                r1 = await client.send_command_in_transaction(frame1, context="...")
+                await asyncio.sleep(...)
+                r2 = await client.send_command_in_transaction(frame2, context="...")
+
+        Devolve o próprio ``asyncio.Lock`` — ele já é usável diretamente
+        como context manager assíncrono; não precisa de um wrapper
+        próprio.
+        """
+        return self._lock
+
     async def send_command(self, frame: bytes, context: str | None = None) -> ParsedFrame:
         """Envia um frame já pronto e aguarda a resposta correspondente.
 
@@ -125,80 +160,105 @@ class PanelClient:
         ``context`` é só um rótulo textual opcional (ex.: "Ativar Partição
         A", "consulta de status") usado para enriquecer as mensagens de
         erro e os logs — não afeta o comportamento do envio em si.
+
+        Para sequências de múltiplos comandos que precisam ser tratadas
+        como uma transação atômica (não podem ser interrompidas por
+        outro comando no meio), ver ``transaction()`` e
+        ``send_command_in_transaction()`` em vez desta função.
         """
         if not self._enabled:
             raise PanelConnectionError("Comunicação com a central está desativada")
+        async with self._lock:
+            return await self._send_command_locked(frame, context)
 
+    async def send_command_in_transaction(
+        self, frame: bytes, context: str | None = None
+    ) -> ParsedFrame:
+        """Igual a ``send_command()``, mas **não adquire o lock sozinho**
+        — só deve ser chamado de dentro de um bloco
+        ``async with client.transaction():``, que já garante que o lock
+        está mantido para toda a sequência. Chamar isso fora desse
+        contexto quebra a serialização (dois comandos concorrentes
+        poderiam se misturar no mesmo socket) — ver ``transaction()``
+        para o motivo desta função existir.
+        """
+        if not self._enabled:
+            raise PanelConnectionError("Comunicação com a central está desativada")
+        return await self._send_command_locked(frame, context)
+
+    async def _send_command_locked(self, frame: bytes, context: str | None = None) -> ParsedFrame:
+        """Lógica real de envio — assume que o lock já está adquirido
+        por quem chamou (``send_command()`` ou
+        ``send_command_in_transaction()``, nunca diretamente)."""
         label = f" [{context}]" if context else ""
 
-        async with self._lock:
-            if not self._connected:
-                await self._connect_locked()
+        if not self._connected:
+            await self._connect_locked()
 
-            assert self._writer is not None
-            assert self._reader is not None
+        assert self._writer is not None
+        assert self._reader is not None
+        try:
+            # Log só AQUI (depois de conseguir a vez na fila do lock),
+            # de propósito — reflete o momento em que o comando
+            # realmente saiu pela conexão, não o momento em que quem
+            # chamou send_command() decidiu mandar. Se o log fosse
+            # colocado antes do "async with self._lock", uma requisição
+            # que precisasse esperar (ex.: uma consulta de status já em
+            # andamento) apareceria no log como enviada muito antes do
+            # que aconteceu de verdade — gerando sequências
+            # aparentemente fora de ordem (relatado pelo usuário).
+            _LOGGER.debug("enviando comando%s: frame=%s", label, frame.hex(" ").upper())
+            self._writer.write(frame)
+            await self._writer.drain()
+            # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir
+            # dele sabemos exatamente quantos bytes ainda faltam ler
+            # (comando + conteúdo + checksum), evitando misturar respostas.
+            # A leitura é feita em duas etapas (cabeçalho, depois o
+            # resto) de propósito: se o timeout estourar na segunda
+            # etapa, pelo menos sabemos quantos bytes a central chegou
+            # a PROMETER (o cabeçalho já foi lido) — informação melhor
+            # que nada para o log, mesmo sem saber quantos bytes do
+            # "resto" chegaram de fato (isso exigiria um loop de
+            # leitura manual, que não temos hoje).
             try:
-                # Log só AQUI (depois de conseguir a vez na fila do lock),
-                # de propósito — reflete o momento em que o comando
-                # realmente saiu pela conexão, não o momento em que quem
-                # chamou send_command() decidiu mandar. Se o log fosse
-                # colocado antes do "async with self._lock", uma requisição
-                # que precisasse esperar (ex.: uma consulta de status já em
-                # andamento) apareceria no log como enviada muito antes do
-                # que aconteceu de verdade — gerando sequências
-                # aparentemente fora de ordem (relatado pelo usuário).
-                _LOGGER.debug("enviando comando%s: frame=%s", label, frame.hex(" ").upper())
-                self._writer.write(frame)
-                await self._writer.drain()
-                # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir
-                # dele sabemos exatamente quantos bytes ainda faltam ler
-                # (comando + conteúdo + checksum), evitando misturar respostas.
-                # A leitura é feita em duas etapas (cabeçalho, depois o
-                # resto) de propósito: se o timeout estourar na segunda
-                # etapa, pelo menos sabemos quantos bytes a central chegou
-                # a PROMETER (o cabeçalho já foi lido) — informação melhor
-                # que nada para o log, mesmo sem saber quantos bytes do
-                # "resto" chegaram de fato (isso exigiria um loop de
-                # leitura manual, que não temos hoje).
-                try:
-                    header = await asyncio.wait_for(
-                        self._reader.readexactly(1), timeout=self._timeout
-                    )
-                except asyncio.TimeoutError as err:
-                    await self._close_locked()
-                    raise PanelConnectionError(
-                        f"Falha de comunicação com a central{label}: tempo limite "
-                        f"excedido ({self._timeout}s) — nenhum byte de resposta "
-                        f"chegou (nem o cabeçalho)"
-                    ) from err
+                header = await asyncio.wait_for(
+                    self._reader.readexactly(1), timeout=self._timeout
+                )
+            except asyncio.TimeoutError as err:
+                await self._close_locked()
+                raise PanelConnectionError(
+                    f"Falha de comunicação com a central{label}: tempo limite "
+                    f"excedido ({self._timeout}s) — nenhum byte de resposta "
+                    f"chegou (nem o cabeçalho)"
+                ) from err
 
-                num_bytes = header[0]
-                try:
-                    remainder = await asyncio.wait_for(
-                        self._reader.readexactly(num_bytes + 1), timeout=self._timeout
-                    )
-                except asyncio.TimeoutError as err:
-                    await self._close_locked()
-                    raise PanelConnectionError(
-                        f"Falha de comunicação com a central{label}: tempo limite "
-                        f"excedido ({self._timeout}s) — central prometeu "
-                        f"{num_bytes + 1} bytes após o cabeçalho, mas não terminou "
-                        f"de enviar a tempo"
-                    ) from err
-                raw = header + remainder
-            except asyncio.IncompleteReadError as err:
+            num_bytes = header[0]
+            try:
+                remainder = await asyncio.wait_for(
+                    self._reader.readexactly(num_bytes + 1), timeout=self._timeout
+                )
+            except asyncio.TimeoutError as err:
                 await self._close_locked()
                 raise PanelConnectionError(
-                    f"Falha de comunicação com a central{label}: conexão encerrada "
-                    f"antes da resposta completa (esperado {err.expected}, recebido "
-                    f"{len(err.partial)} bytes: {err.partial.hex(' ').upper()})"
+                    f"Falha de comunicação com a central{label}: tempo limite "
+                    f"excedido ({self._timeout}s) — central prometeu "
+                    f"{num_bytes + 1} bytes após o cabeçalho, mas não terminou "
+                    f"de enviar a tempo"
                 ) from err
-            except OSError as err:
-                await self._close_locked()
-                detail = str(err) or err.__class__.__name__
-                raise PanelConnectionError(
-                    f"Falha de comunicação com a central{label}: {detail}"
-                ) from err
+            raw = header + remainder
+        except asyncio.IncompleteReadError as err:
+            await self._close_locked()
+            raise PanelConnectionError(
+                f"Falha de comunicação com a central{label}: conexão encerrada "
+                f"antes da resposta completa (esperado {err.expected}, recebido "
+                f"{len(err.partial)} bytes: {err.partial.hex(' ').upper()})"
+            ) from err
+        except OSError as err:
+            await self._close_locked()
+            detail = str(err) or err.__class__.__name__
+            raise PanelConnectionError(
+                f"Falha de comunicação com a central{label}: {detail}"
+            ) from err
 
         try:
             return parse_frame(raw)

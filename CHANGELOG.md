@@ -10,6 +10,78 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Adicionado — entidades de partições armadas ausente/presente
+
+Duas entidades novas (`sensor`): **"Partições armadas ausente"** e
+**"Partições armadas presente"** — contagem no estado, lista de quais
+partições nos atributos. Resumo rápido sem precisar checar cada
+`alarm_control_panel` de partição individualmente. Usa
+`status.partitions_armed` (o que a central reporta de verdade) como
+fonte da existência/estado "ativada" — não só o que esta integração
+rastreou internamente (`coordinator.armed_home_mode`), garantindo que
+partições ativadas por fora dela (teclado físico, outro app) também
+apareçam corretamente. Partições com disparo em andamento não entram
+em nenhuma das duas contagens, mesmo critério já usado no estado de
+cada `alarm_control_panel`. Testado isoladamente com 4 cenários
+(ausente, presente, não rastreada, disparada).
+
+### Adicionado — recomendação sobre o evento 1410 do app AMT Remoto
+
+Documentação (tela de configuração + README) atualizada: quem preenche
+a senha de leitura de 6 dígitos agora é avisado para considerar
+desativar o envio do evento `1410` ("Acesso remoto para leitura de
+eventos ou configurações") no app AMT Remoto — esta integração
+autentica com essa senha periodicamente (a cada 5 minutos, para a
+tensão), e cada autenticação gera esse evento na central, podendo
+encher o histórico de eventos ao longo do tempo. Aproveitado também
+para corrigir uma descrição desatualizada no README sobre quando essa
+senha é necessária (não mencionava mais a tensão como um dos motivos).
+
+### Corrigido — timeouts de status coincidindo com o ciclo de tensão (causa raiz real)
+
+Investigação aprofundada (log real + análise cruzada de arquitetura,
+com apoio de outra IA consultada pelo usuário) sobre os timeouts
+esporádicos na consulta de status já relatados numa versão anterior
+desta release — a mitigação anterior (pausa de acomodação de 1s
+depois da consulta de tensão) não resolveu de fato, como confirmado
+por um novo log em produção: os timeouts continuavam acontecendo,
+sempre no **mesmo instante exato** dentro de cada ciclo de 5 minutos
+da consulta de tensão (não distribuídos aleatoriamente).
+
+Causa raiz confirmada no código: a sequência de autenticação + consulta
+(protocolo `0xE7`, usado tanto na tensão quanto na leitura legada de
+nomes/eventos) enviava cada comando via `send_command()` normal — que
+adquire e libera o lock de comunicação **a cada chamada individual**.
+Isso deixava uma janela real, durante o `asyncio.sleep()` entre a
+autenticação e o comando seguinte, em que o polling rápido de status
+(a cada 0,25s) podia se intercalar **no meio** da troca autenticada —
+provavelmente confundindo o estado de sessão da central e causando
+lentidão na resposta ao comando seguinte, seja da própria transação ou
+do polling.
+
+- `panel_client.PanelClient`: novo mecanismo de transação atômica —
+  `transaction()` (context manager que mantém o lock adquirido por
+  toda a duração de um bloco `async with`) e
+  `send_command_in_transaction()` (mesma lógica de `send_command()`,
+  mas sem adquirir o lock sozinho — só utilizável dentro de
+  `transaction()`). `send_command()` continua funcionando exatamente
+  como antes para uso avulso.
+- `coordinator.async_refresh_voltage()` e
+  `coordinator._async_legacy_eeprom_session()` (usada tanto na
+  sincronização de nomes quanto na leitura de eventos) — reescritas
+  para rodar a sequência inteira (autenticação + comando(s) seguintes)
+  dentro de uma única transação, sem soltar o lock no meio.
+- Testado isoladamente: confirmado que nenhum status consegue adquirir
+  o lock durante uma transação em andamento (mesmo com múltiplas
+  tentativas concorrentes simuladas), e que uma exceção levantada no
+  meio de uma transação ainda libera o lock corretamente (sem travar a
+  conexão).
+- Instrumentação de log adicionada (nível debug) nos três caminhos —
+  consulta de status normal, consulta de tensão, sessão legada — com
+  timestamps de alta resolução em cada etapa, para permitir confirmar
+  em produção (com o log em nível debug ativado) se a correção resolveu
+  de fato, e facilitar diagnósticos parecidos no futuro.
+
 ### Corrigido — nomes de zona/usuário voltavam ao genérico após reinício
 
 Relatado pelo usuário: desligar a conexão com a central, reiniciar o

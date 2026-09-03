@@ -126,12 +126,17 @@ adicione a URL deste repositório (categoria Integração) → instale
    "AMT 8000 (experimental)" — mas isso ainda não foi confirmado com
    captura real).
 7. Opcional: **senha de leitura de mensagens (6 dígitos)** — deixe em
-   branco se seu modelo já aparece na lista de "Nomes de zona e log de
-   eventos" abaixo. Preencha (a mesma "Senha Acesso Remoto" do app AMT
-   Mobile) só se sua central ficar de fora dessa lista e você mesmo
-   assim quiser nomes de zona/usuário e eventos — usa um protocolo
-   alternativo, confirmado funcionando em hardware real. Não se aplica
-   à AMT 8000.
+   branco se não precisar. Preencha (a mesma "Senha Acesso Remoto" do
+   app AMT Mobile/AMT Remoto) se sua central ficar de fora da lista de
+   "Nomes de zona e log de eventos" abaixo e você mesmo assim quiser
+   nomes de zona/usuário e eventos, **ou** se quiser as entidades de
+   tensão da fonte/bateria (funciona em qualquer modelo com offset
+   confirmado — ver seção própria). Não se aplica à AMT 8000.
+   > ⚠️ Se preencher, recomendamos **desativar o envio do evento 1410**
+   > ("Acesso remoto para leitura de eventos ou configurações") no app
+   > AMT Remoto — esta integração autentica com essa senha
+   > periodicamente (a cada 5 minutos, para a tensão), e cada vez gera
+   > esse evento na central, podendo encher o histórico de eventos.
 8. Nos demais modelos (checkbox da AMT 8000 desmarcado), o **modelo é
    detectado automaticamente** — sem campo manual.
 9. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
@@ -193,7 +198,10 @@ não são editáveis ali (esse último só funciona na configuração inicial)
   expansores de PGM/zona.
 - **Bateria e contadores** (`sensor`): nível de bateria (%), contagem de
   zonas abertas/violadas/anuladas/com bateria baixa (sensores sem fio, com
-  a lista de quais zonas nos atributos), **"Último comando"** (rastreia
+  a lista de quais zonas nos atributos), contagem de **partições armadas
+  ausente/presente** (com a lista de quais partições nos atributos —
+  resumo rápido sem precisar checar cada `alarm_control_panel`
+  individualmente), **"Último comando"** (rastreia
   a última ação enviada e a resposta da central, separado da consulta de
   status normal), **"Últimos eventos"** (só nos modelos/firmwares da
   tabela abaixo — ver seção própria mais adiante), e, se o Receptor IP
