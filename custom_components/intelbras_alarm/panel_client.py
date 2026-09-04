@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from .const import DEFAULT_REQUEST_TIMEOUT
 from .protocol import ParsedFrame, ProtocolError, parse_frame
@@ -151,7 +152,12 @@ class PanelClient:
         """
         return self._lock
 
-    async def send_command(self, frame: bytes, context: str | None = None) -> ParsedFrame:
+    async def send_command(
+        self,
+        frame: bytes,
+        context: str | None = None,
+        on_sent: Callable[[], None] | None = None,
+    ) -> ParsedFrame:
         """Envia um frame já pronto e aguarda a resposta correspondente.
 
         Reabre a conexão automaticamente se ela tiver caído; nunca fecha e
@@ -169,7 +175,7 @@ class PanelClient:
         if not self._enabled:
             raise PanelConnectionError("Comunicação com a central está desativada")
         async with self._lock:
-            return await self._send_command_locked(frame, context)
+            return await self._send_command_locked(frame, context, on_sent=on_sent)
 
     async def send_command_in_transaction(
         self, frame: bytes, context: str | None = None
@@ -186,7 +192,12 @@ class PanelClient:
             raise PanelConnectionError("Comunicação com a central está desativada")
         return await self._send_command_locked(frame, context)
 
-    async def _send_command_locked(self, frame: bytes, context: str | None = None) -> ParsedFrame:
+    async def _send_command_locked(
+        self,
+        frame: bytes,
+        context: str | None = None,
+        on_sent: Callable[[], None] | None = None,
+    ) -> ParsedFrame:
         """Lógica real de envio — assume que o lock já está adquirido
         por quem chamou (``send_command()`` ou
         ``send_command_in_transaction()``, nunca diretamente)."""
@@ -208,6 +219,8 @@ class PanelClient:
             # que aconteceu de verdade — gerando sequências
             # aparentemente fora de ordem (relatado pelo usuário).
             _LOGGER.debug("enviando comando%s: frame=%s", label, frame.hex(" ").upper())
+            if on_sent is not None:
+                on_sent()
             self._writer.write(frame)
             await self._writer.drain()
             # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir

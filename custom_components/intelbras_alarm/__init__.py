@@ -171,6 +171,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "inicial; nova tentativa em 5 minutos."
                 )
 
+        # A consulta inicial acima é feita diretamente pelo coordinator.
+        # A partir daqui, todo polling periódico passa pelo scheduler
+        # próprio, usando o mesmo ``polling_interval`` configurável das
+        # opções da integração.
+        coordinator.resume_polling()
+
     if coordinator.supports_voltage_reading:
         # Tensão da fonte/bateria (comando [1, 0x17] dentro do 0xE7, ver
         # coordinator.async_refresh_voltage) — deliberadamente fora do
@@ -191,21 +197,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.async_on_unload(
             async_track_time_interval(hass, _async_refresh_voltage_periodico, timedelta(minutes=5))
         )
-    else:
-        # Não chamamos async_config_entry_first_refresh(): ele levantaria
-        # ConfigEntryNotReady (pois o client recusa comandos desabilitado),
-        # o que impediria até a criação do próprio switch de conexão — e o
-        # usuário ficaria sem forma de religar pela UI. Em vez disso, a
-        # entrada é configurada normalmente, sem dados iniciais; as demais
-        # entidades ficam "indisponíveis" até o switch ser ligado.
-        #
-        # coordinator.pause_polling() AQUI é essencial (bug real corrigido,
-        # ver docstring do método): sem isso, o primeiro listener adicionado
-        # quando as entidades forem criadas logo abaixo
-        # (`async_forward_entry_setups`) já dispararia o agendamento normal
-        # de consultas — e cada uma falharia instantaneamente (switch
-        # desligado), criando o mesmo laço de CPU alta desde a primeira
-        # inicialização, sem nem precisar desligar o switch manualmente.
+
+    if not connection_enabled:
+        # Sem conexão não iniciamos o scheduler próprio. Ao religar pelo
+        # switch, ``resume_polling()`` cria o loop e o primeiro pedido de
+        # status passa pelo mesmo limitador configurável.
         coordinator.pause_polling()
         _LOGGER.info(
             "Conexão com a central Intelbras está desativada (switch); "
@@ -260,6 +256,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         data: IntelbrasAlarmData = hass.data[DOMAIN].pop(entry.entry_id)
+        await data.coordinator.async_stop_polling()
         if data.receptor_server is not None:
             await data.receptor_server.async_stop()
         await data.client.disconnect()

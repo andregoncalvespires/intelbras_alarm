@@ -140,11 +140,11 @@ class IntelbrasConnectionSwitch(SwitchEntity):
         await self._client.set_enabled(True)
         await async_save_connection_enabled(self.hass, self._entry_id, True)
         self.async_write_ha_state()
-        # Restaura o agendamento automático de consultas (ver
-        # coordinator.pause_polling/resume_polling — corrige um bug real
-        # de CPU alta com o switch desligado) e já pede um ciclo novo.
+        # Retoma o scheduler próprio de STATUS e pede um ciclo novo. O
+        # pedido passa pelo mesmo limitador do polling normal, portanto
+        # nunca cria uma consulta extra dentro do intervalo configurado.
         self._coordinator.resume_polling()
-        await self._coordinator.async_request_refresh()
+        await self._coordinator.async_request_status_refresh()
         if self._coordinator.supports_voltage_reading:
             # Não espera até 5 minutos pro próximo ciclo periódico pegar
             # a reconexão — busca já, pra feedback imediato na UI (ver

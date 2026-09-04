@@ -1201,6 +1201,75 @@ custom_components/intelbras_alarm/
 └── translations/          # pt-BR, pt, en
 ```
 
+### Scheduler próprio de polling de status (substitui `update_interval`)
+
+**Bug real corrigido**, achado com log em produção + análise cruzada de
+arquitetura: o `update_interval` do `DataUpdateCoordinator` não é
+preciso o suficiente para a cadência sub-segundo (0,25s) que esta
+integração precisa (capturar eventos de PIR, que só duram ~1000ms). O
+próprio código do `update_coordinator.py` do Home Assistant calcula o
+próximo horário como `int(loop.time()) + self._microsecond +
+update_interval` — o `int()` trunca a parte fracionária do relógio
+monotônico, e com intervalos sub-segundo isso frequentemente resulta
+num horário já no passado, fazendo `loop.call_at()` disparar quase
+imediatamente. Efeito observado (confirmado em log real e reproduzido
+numa simulação isolada): rajadas de 6-8 consultas em menos de 100ms,
+seguidas de uma pausa de várias centenas de ms, repetindo a cada
+segundo — não a cadência estável de 250ms pretendida.
+
+**Correção**: `update_interval=None` (o `DataUpdateCoordinator`
+continua sendo usado para armazenar/comparar `PanelStatus`,
+`always_update=False`, notificar entidades e disponibilidade — só o
+agendamento do polling muda) + `coordinator._polling_loop()`, um
+scheduler próprio baseado em `time.monotonic()`:
+
+- Marca o início de cada consulta no instante **exato** do envio
+  (`on_sent`, callback passado a `PanelClient.send_command()`,
+  disparado dentro do lock, logo antes de `writer.write()`) — não no
+  momento em que o ciclo é decidido, que pode ficar adiantado se algo
+  estiver segurando o lock nesse meio-tempo.
+- **Nunca recupera atraso**: se uma consulta demorar, a próxima só é
+  permitida a partir do intervalo configurado contado do início real
+  da anterior, nunca tentando "compensar" disparando várias em
+  sequência.
+- Fallback próprio para consultas que falham antes de conseguir
+  escrever no socket (quando `on_sent` nunca chega a disparar) —
+  evita um loop apertado nesse cenário específico de falha.
+- Pedidos de status extra após comandos (PGM, armar, desarmar, anular)
+  são coalescidos: múltiplos pedidos simultâneos compartilham a mesma
+  consulta seguinte, via `asyncio.Future` (`async_request_status_
+  refresh()`), em vez de gerar uma consulta para cada.
+
+#### Prioridade de comando sobre o scheduler de status
+
+Pedido explícito do usuário, complementar ao scheduler acima: um
+comando (PGM/armar/desarmar/etc.) precisa ter prioridade sobre a
+próxima consulta de status — não pode ficar preso atrás de várias
+consultas periódicas competindo pelo mesmo lock em ordem simples
+(FIFO), só atrás da que já estiver em voo no momento em que ele chega.
+
+Mecanismo: `coordinator._pode_iniciar_status` (`asyncio.Event`,
+começa "liberado"). `_send_and_check`/`_send_and_check_amt8000` — os
+dois únicos pontos que enviam comandos de usuário, cobrindo PGM,
+sirene, pânico, anulação de zona, armar e desarmar nas duas famílias
+de protocolo — limpam essa flag antes de enviar e a restauram no
+`finally`, envolvendo a lógica original (renomeada para `_impl`) sem
+alterá-la. O scheduler verifica a flag em dois pontos do
+`_polling_loop()`: antes de calcular o próximo horário permitido, e de
+novo depois de acordar de uma espera (caso um comando tenha começado
+durante ela) — nunca inicia uma consulta nova enquanto a flag estiver
+limpa. Não interrompe uma consulta já em andamento no momento em que o
+comando chega — isso já é garantido pelo `asyncio.Lock()` da conexão,
+sem precisar de nada especial; a flag só impede que o scheduler
+dispare *outra* antes do comando terminar.
+
+Validado com as funções reais, extraídas do arquivo publicado via AST,
+usando um `asyncio.Lock()` de verdade compartilhado entre uma consulta
+de status simulada e um comando simulado — confirmando a sequência
+completa esperada: `status em andamento → comando chega (impede novas
+consultas) → status em andamento termina normalmente → comando espera
+o lock, envia, conclui → status retoma`.
+
 ### Conexão TCP persistente
 `panel_client.PanelClient` abre a conexão uma única vez e a mantém aberta.
 Toda requisição é serializada por um `asyncio.Lock` (o protocolo é

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 
 from .const import DEFAULT_REQUEST_TIMEOUT
 from .protocol_amt8000 import (
@@ -122,7 +123,12 @@ class PanelClientAmt8000:
         self._authenticated = True
         _LOGGER.debug("AMT 8000: sessão autenticada")
 
-    async def send_command(self, frame: bytes, context: str | None = None) -> ParsedFrameAmt8000:
+    async def send_command(
+        self,
+        frame: bytes,
+        context: str | None = None,
+        on_sent: Callable[[], None] | None = None,
+    ) -> ParsedFrameAmt8000:
         """Envia um frame já pronto (ver ``protocol_amt8000.py``) e aguarda a resposta.
 
         Reconecta e reautentica automaticamente se a conexão tiver caído —
@@ -135,15 +141,24 @@ class PanelClientAmt8000:
         async with self._lock:
             if not self._connected or not self._authenticated:
                 await self._connect_and_authenticate_locked()
-            return await self._raw_send_locked(frame, context=context)
+            return await self._raw_send_locked(
+                frame, context=context, on_sent=on_sent
+            )
 
-    async def _raw_send_locked(self, frame: bytes, context: str | None = None) -> ParsedFrameAmt8000:
+    async def _raw_send_locked(
+        self,
+        frame: bytes,
+        context: str | None = None,
+        on_sent: Callable[[], None] | None = None,
+    ) -> ParsedFrameAmt8000:
         """Envia ``frame`` e lê a resposta — assume o lock já adquirido."""
         label = f" [{context}]" if context else ""
         assert self._writer is not None
         assert self._reader is not None
         try:
             _LOGGER.debug("AMT 8000: enviando%s: frame=%s", label, frame.hex(" ").upper())
+            if on_sent is not None:
+                on_sent()
             self._writer.write(frame)
             await self._writer.drain()
 

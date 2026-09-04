@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -29,6 +29,7 @@ from .const import (
     CONF_LEGACY_EEPROM_PASSWORD,
     DEFAULT_CONNECTION_HEALTH_TIMEOUT,
     DEFAULT_ENABLED_ZONES_SPEC,
+    DEFAULT_POLLING_INTERVAL,
     DEFAULT_REQUEST_TIMEOUT,
     EEPROM_EXTENDED_MIN_FIRMWARE,
     EVENT_ENTITY_RECENT_COUNT,
@@ -49,6 +50,7 @@ from .const import (
     MODEL_STATUS_MIN_LEN_OVERRIDE,
     MODEL_TABLE,
     MODEL_UNKNOWN,
+    OPT_POLLING_INTERVAL,
     PGM_ADDRESSES,
     USER_NAME_RECORD_LEN,
     USER_NAME_TABLE_CAPACITY,
@@ -227,11 +229,21 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             )
             self._enabled_zones = parse_zone_spec(DEFAULT_ENABLED_ZONES_SPEC)
 
+        # O intervalo continua sendo configurável exatamente pela mesma
+        # opção existente (``polling_interval``). Ele NÃO é mais entregue ao
+        # timer interno do DataUpdateCoordinator: o scheduler do HA não é
+        # apropriado para cadência sub-segundo e, com 0,25s, foi observado em
+        # log disparando rajadas de 6-8 consultas/s. O valor abaixo é usado
+        # pelo scheduler próprio implementado nesta classe.
+        self._configured_polling_interval = float(
+            entry.options.get(OPT_POLLING_INTERVAL, DEFAULT_POLLING_INTERVAL)
+        )
+
         super().__init__(
             hass,
             _LOGGER,
             name=f"Intelbras Alarm ({entry.title})",
-            update_interval=timedelta(seconds=entry.options.get("polling_interval", 0.25)),
+            update_interval=None,
             # Evita notificar/reescrever o estado de todas as entidades a
             # cada ciclo quando nada mudou de verdade — comportamento
             # padrão do DataUpdateCoordinator é sempre notificar, mesmo
@@ -255,49 +267,200 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # diagnóstico, sem efeito em nenhuma lógica de automação.
             always_update=False,
         )
-        # Guardado à parte pra poder restaurar depois de pause_polling()
-        # (ver logo abaixo) — self.update_interval pode ser zerado
-        # temporariamente, então precisamos lembrar o valor de verdade.
-        self._configured_polling_interval = self.update_interval
+        # Scheduler próprio do polling rápido. O DataUpdateCoordinator
+        # continua sendo usado para armazenar/comparar ``PanelStatus`` e
+        # notificar as entidades, mas NÃO agenda mais o polling.
+        self._polling_enabled = False
+        self._polling_task: asyncio.Task[None] | None = None
+        self._polling_wakeup = asyncio.Event()
+        self._status_refresh_waiters: set[asyncio.Future[None]] = set()
+        # Instante monotônico em que o último ciclo foi iniciado. Serve de
+        # fallback para limitar retries quando a conexão falha antes de o
+        # frame chegar a ser escrito no socket.
+        self._last_status_cycle_started_monotonic: float | None = None
+        # Instante EXATO em que o último frame de status foi escrito no
+        # socket. É atualizado por callback dentro do PanelClient, depois de
+        # adquirir o lock e imediatamente antes de ``writer.write()``. É
+        # essa marca que garante no máximo 1 STATUS por intervalo configurado,
+        # mesmo quando o status ficou algum tempo esperando atrás de PGM,
+        # tensão ou outra operação no lock global da conexão.
+        self._last_status_sent_monotonic: float | None = None
+        # Prioridade de comando sobre o scheduler de status — pedido
+        # explícito do usuário, complementar ao mecanismo acima. O lock
+        # sozinho (FIFO) não garante que um comando "fure a fila" à
+        # frente de uma consulta de status que esteja prestes a começar
+        # (só garante que ele espera o que já está EM VOO no exato
+        # momento em que chega) — sem isso, um comando podia
+        # ocasionalmente ficar atrás não só da consulta ativa, mas
+        # também de uma nova que o scheduler disparasse por coincidência
+        # de tempo. `_send_and_check`/`_send_and_check_amt8000` (os dois
+        # únicos pontos que enviam comandos de usuário — PGM, sirene,
+        # pânico, anular zona, armar, desarmar) limpam esta flag antes
+        # de enviar e a restauram depois; `_polling_loop()` verifica
+        # antes de iniciar cada nova consulta de status. Começa
+        # "liberada" (nenhum comando em andamento).
+        self._pode_iniciar_status = asyncio.Event()
+        self._pode_iniciar_status.set()
+
+    def _mark_status_sent(self) -> None:
+        """Callback do PanelClient no instante real de envio de um STATUS."""
+        self._last_status_sent_monotonic = time.monotonic()
+
+    def _seconds_until_next_status(self) -> float:
+        """Tempo restante até ser permitido iniciar outro envio de STATUS."""
+        reference = self._last_status_sent_monotonic
+        if (
+            self._last_status_cycle_started_monotonic is not None
+            and (
+                reference is None
+                or self._last_status_cycle_started_monotonic > reference
+            )
+        ):
+            # Se o ciclo falhou antes de conseguir escrever no socket,
+            # limita a frequência de retries usando o início da tentativa.
+            reference = self._last_status_cycle_started_monotonic
+
+        if reference is None:
+            return 0.0
+        elapsed = time.monotonic() - reference
+        return max(0.0, self._configured_polling_interval - elapsed)
+
+    def _complete_status_refresh_waiters(self) -> None:
+        """Libera todos os comandos que aguardavam o próximo STATUS.
+
+        Vários comandos disparados juntos compartilham o mesmo próximo
+        refresh: não criamos um STATUS extra para cada PGM/arm/disarm.
+        """
+        waiters = tuple(self._status_refresh_waiters)
+        self._status_refresh_waiters.clear()
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.set_result(None)
+
+    async def _polling_loop(self) -> None:
+        """Scheduler próprio do status, com cadência sub-segundo precisa.
+
+        Não tenta "recuperar" polls atrasados. Se um STATUS deveria sair às
+        10.250 mas ficou bloqueado por um PGM até 10.700, ele sai às 10.700
+        e o próximo só poderá sair a partir de 10.950.
+        """
+        try:
+            while self._polling_enabled:
+                if not self._pode_iniciar_status.is_set():
+                    # Um comando está em andamento (PGM/arme/desarme/etc.)
+                    # — prioridade dele sobre o scheduler de status, pedido
+                    # explícito do usuário. Nem calcula o próximo horário
+                    # permitido enquanto isso não for liberado de novo.
+                    await self._pode_iniciar_status.wait()
+                    continue
+
+                delay = self._seconds_until_next_status()
+                if delay > 0:
+                    self._polling_wakeup.clear()
+                    try:
+                        await asyncio.wait_for(
+                            self._polling_wakeup.wait(), timeout=delay
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+
+                    if not self._polling_enabled:
+                        break
+                    # Um comando pode acordar o scheduler antes da hora.
+                    # Acordar não permite furar o intervalo mínimo.
+                    if self._seconds_until_next_status() > 0:
+                        continue
+                    if not self._pode_iniciar_status.is_set():
+                        # Um comando começou durante a espera — revalida
+                        # do zero, mesma prioridade do topo do loop.
+                        continue
+
+                self._last_status_cycle_started_monotonic = time.monotonic()
+                try:
+                    # async_refresh() executa _async_update_data(), atualiza
+                    # self.data e aplica always_update=False, mas com
+                    # update_interval=None não agenda nenhum próximo ciclo.
+                    await self.async_refresh()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    # DataUpdateCoordinator normalmente trata UpdateFailed
+                    # internamente. Isto protege apenas contra uma exceção
+                    # realmente inesperada sem matar o scheduler definitivo.
+                    _LOGGER.exception(
+                        "Erro inesperado no scheduler próprio de consulta de status"
+                    )
+                finally:
+                    # Quem pediu refresh após um comando espera apenas que o
+                    # próximo ciclo termine, com sucesso ou falha — mesmo
+                    # comportamento prático do async_request_refresh anterior.
+                    self._complete_status_refresh_waiters()
+        finally:
+            if asyncio.current_task() is self._polling_task:
+                self._polling_task = None
 
     def pause_polling(self) -> None:
-        """Interrompe por completo o agendamento automático de consultas.
+        """Pausa o scheduler próprio sem criar novas consultas de status.
 
-        BUG REAL corrigido (relatado em produção, agosto/2026): antes desta
-        correção, desligar o switch "Conexão com a central" só fazia cada
-        *tentativa* de consulta falhar rápido (``UpdateFailed``, sem tentar
-        se comunicar de verdade) — mas o **agendador** do próprio
-        `DataUpdateCoordinator` (Home Assistant core) continuava se
-        reagendando sozinho, chamando `_async_update_data()` de novo e de
-        novo. Como cada tentativa desabilitada termina em ~0,000s, isso
-        criava um laço apertadíssimo (chegou a **milhares de chamadas por
-        segundo**, confirmado em log real), consumindo CPU à toa mesmo sem
-        nenhuma tentativa de comunicação de rede — só o próprio custo de
-        Python de levantar a exceção, formatar o log de debug do HA core
-        ("Finished fetching... success: False", gerado pelo próprio
-        `update_coordinator.py`, não por nós) e reagendar, repetidamente.
-
-        A correção: `update_interval = None` faz o agendador do HA core
-        (`_schedule_refresh()`) simplesmente **não agendar mais nada**
-        (`if self._update_interval_seconds is None: return`) — não é
-        "tentar rápido e falhar", é "não tentar mais até alguém pedir".
-        Chamado tanto ao desligar o switch manualmente (`switch.py`) quanto
-        na inicialização, se a integração já subir com o switch desligado
-        (`__init__.py`) — nesse segundo caso, sem isso, o primeiro listener
-        adicionado (`async_add_listener`, quando as entidades são criadas)
-        já dispararia um agendamento normal antes de qualquer consulta
-        sequer ter rodado uma vez.
+        Nota (caso de borda, aceitável): se o loop estiver, no exato
+        momento desta chamada, esperando um comando terminar (prioridade
+        de comando, ver ``_pode_iniciar_status``), a pausa só é notada
+        depois que esse comando concluir — atraso pequeno e limitado à
+        duração de um único comando (tipicamente <100ms), não um loop
+        preso. ``async_stop_polling()`` (usado em unload/reload) não tem
+        essa limitação — usa ``task.cancel()``, que interrompe
+        imediatamente qualquer ponto de espera, independente do que o
+        loop estiver aguardando.
         """
-        self.update_interval = None
+        self._polling_enabled = False
+        self._polling_wakeup.set()
+        # Não deixa um comando já concluído ficar preso esperando um refresh
+        # impossível depois que o usuário desligou a conexão.
+        self._complete_status_refresh_waiters()
 
     def resume_polling(self) -> None:
-        """Restaura o intervalo de consulta configurado, depois de pause_polling().
+        """Inicia/retoma o scheduler usando o intervalo configurado."""
+        self._polling_enabled = True
+        if self._polling_task is None or self._polling_task.done():
+            self._polling_task = self.hass.async_create_task(
+                self._polling_loop(),
+                name=f"intelbras_alarm_status_poll_{self.entry.entry_id}",
+            )
+        self._polling_wakeup.set()
 
-        Não dispara uma consulta sozinho — quem chama continua responsável
-        por pedir um ciclo nova (``await coordinator.async_request_refresh()``),
-        exatamente como já era feito ao religar o switch.
+    async def async_stop_polling(self) -> None:
+        """Encerra definitivamente o scheduler durante unload/reload."""
+        self._polling_enabled = False
+        self._polling_wakeup.set()
+        self._complete_status_refresh_waiters()
+        task = self._polling_task
+        self._polling_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    async def async_request_status_refresh(self) -> None:
+        """Pede um STATUS pelo scheduler e aguarda esse próximo ciclo.
+
+        Usado depois de PGM/arm/disarm/bypass e ao religar a conexão.
+        O pedido acorda o scheduler, mas NUNCA fura o intervalo configurado.
+        Pedidos concorrentes são coalescidos no mesmo próximo STATUS.
         """
-        self.update_interval = self._configured_polling_interval
+        if not self.client.enabled:
+            return
+        if not self._polling_enabled:
+            self.resume_polling()
+
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._status_refresh_waiters.add(waiter)
+        self._polling_wakeup.set()
+        try:
+            await waiter
+        finally:
+            self._status_refresh_waiters.discard(waiter)
 
     @property
     def max_zones(self) -> int:
@@ -571,7 +734,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         try:
             t_inicio_status = time.monotonic()
             response = await self.client.send_command(
-                _build_status_frame(self._password, self.family, self.model_key), context="consulta de status"
+                _build_status_frame(self._password, self.family, self.model_key),
+                context="consulta de status",
+                on_sent=self._mark_status_sent,
             )
             _LOGGER.debug(
                 "Consulta de status: respondida em %.3fs", time.monotonic() - t_inicio_status
@@ -695,7 +860,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         """
         try:
             response = await self.client.send_command(
-                amt8000.cmd_status(), context="consulta de status (AMT 8000)"
+                amt8000.cmd_status(),
+                context="consulta de status (AMT 8000)",
+                on_sent=self._mark_status_sent,
             )
             if not response.valid_checksum:
                 raise UpdateFailed("Checksum inválido na resposta de status (AMT 8000)")
@@ -849,7 +1016,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             await self._send_and_check_amt8000(frame, label)
             key = partition or "CENTRAL"
             self.armed_home_mode[key] = stay
-            await self.async_request_refresh()
+            await self.async_request_status_refresh()
             return
         code = None if partition is None else _partition_code(partition)
         frame = cmd_arm(password or self._password, code, stay=stay)
@@ -857,7 +1024,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         await self._send_and_check(frame, label)
         key = partition or "CENTRAL"
         self.armed_home_mode[key] = stay
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
 
     async def async_disarm(self, partition: str | None, password: str | None = None) -> None:
         if self.family == FAMILY_8000:
@@ -867,7 +1034,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             await self._send_and_check_amt8000(frame, label)
             key = partition or "CENTRAL"
             self.armed_home_mode[key] = False
-            await self.async_request_refresh()
+            await self.async_request_status_refresh()
             return
         code = None if partition is None else _partition_code(partition)
         frame = cmd_disarm(password or self._password, code)
@@ -875,7 +1042,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         await self._send_and_check(frame, label)
         key = partition or "CENTRAL"
         self.armed_home_mode[key] = False
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
 
     async def async_set_pgm(self, address: int, turn_on: bool, pgm: int | None = None) -> None:
         if self.family == FAMILY_8000:
@@ -884,13 +1051,13 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             frame = amt8000.cmd_pgm(pgm, turn_on)
             label = f"{'Ligar' if turn_on else 'Desligar'} PGM {pgm}"
             await self._send_and_check_amt8000(frame, label)
-            await self.async_request_refresh()
+            await self.async_request_status_refresh()
             return
         frame = cmd_pgm(self._password, address, turn_on)
         pgm_label = f"PGM {pgm}" if pgm is not None else f"PGM (endereço 0x{address:02X})"
         label = f"{'Ligar' if turn_on else 'Desligar'} {pgm_label}"
         await self._send_and_check(frame, label)
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
 
     async def async_set_siren(self, turn_on: bool) -> None:
         if self.family == FAMILY_8000:
@@ -906,7 +1073,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         frame = cmd_siren(self._password, turn_on)
         label = "Ligar sirene" if turn_on else "Desligar sirene"
         await self._send_and_check(frame, label)
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
 
     async def async_panic(self, kind: int) -> None:
         if self.family == FAMILY_8000:
@@ -940,7 +1107,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             for zone in sorted(zones_to_bypass):
                 frame = amt8000.cmd_bypass(zone, True)
                 await self._send_and_check_amt8000(frame, f"Anular zona {zone}")
-            await self.async_request_refresh()
+            await self.async_request_status_refresh()
             return
 
         target = set(zones_to_bypass)
@@ -956,7 +1123,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         zones_fmt = ", ".join(str(z) for z in sorted(zones_to_bypass))
         label = f"Anular zona(s) {zones_fmt}"
         await self._send_and_check(frame, label)
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
         _LOGGER.debug(
             "async_bypass_zones: após refresh, anuladas_agora=%s",
             {z for z, b in self.data.zones_bypassed.items() if b} if self.data else "sem status",
@@ -1004,7 +1171,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             return
         frame = cmd_bypass(self._password, {})
         await self._send_and_check(frame, "Remover todas as anulações de zona")
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
 
     async def async_unbypass_zones(self, zones: set[int]) -> None:
         """Reativa uma ou mais zonas, preservando as demais anulações existentes.
@@ -1023,7 +1190,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             for zone in sorted(zones):
                 frame = amt8000.cmd_bypass(zone, False)
                 await self._send_and_check_amt8000(frame, f"Reativar zona {zone}")
-            await self.async_request_refresh()
+            await self.async_request_status_refresh()
             return
 
         current: set[int] = set()
@@ -1038,7 +1205,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         frame = cmd_bypass(self._password, {z: True for z in current})
         zones_fmt = ", ".join(str(z) for z in sorted(zones))
         await self._send_and_check(frame, f"Reativar zona(s) {zones_fmt}")
-        await self.async_request_refresh()
+        await self.async_request_status_refresh()
         _LOGGER.debug(
             "async_unbypass_zones: após refresh, anuladas_agora=%s",
             {z for z, b in self.data.zones_bypassed.items() if b} if self.data else "sem status",
@@ -1137,6 +1304,22 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         return result
 
     async def _send_and_check(self, frame: bytes, action_label: str | None = None) -> None:
+        """Envia um comando de usuário com prioridade sobre o scheduler de
+        status (pedido explícito do usuário — ver ``self._pode_iniciar_status``
+        no ``__init__``): impede que o scheduler *inicie* uma nova consulta
+        de status enquanto este comando estiver em andamento. Não interrompe
+        uma consulta que já esteja em voo no momento em que o comando chega
+        — essa parte já é garantida pelo próprio lock da conexão, sem
+        precisar de nada especial aqui.
+        """
+        self._pode_iniciar_status.clear()
+        try:
+            await self._send_and_check_impl(frame, action_label)
+        finally:
+            self._pode_iniciar_status.set()
+            self._polling_wakeup.set()
+
+    async def _send_and_check_impl(self, frame: bytes, action_label: str | None = None) -> None:
         # Grava a ação sendo enviada ANTES da resposta chegar, e notifica
         # os listeners imediatamente (async_update_listeners, sem esperar
         # um novo ciclo de polling) — assim o sensor "Último comando" fica
@@ -1194,6 +1377,20 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             raise HomeAssistantError(err.message) from err
 
     async def _send_and_check_amt8000(self, frame: bytes, action_label: str | None = None) -> None:
+        """Envia um comando de usuário (AMT 8000) com prioridade sobre o
+        scheduler de status — mesmo mecanismo/motivo de ``_send_and_check``
+        para as demais famílias, ver docstring lá.
+        """
+        self._pode_iniciar_status.clear()
+        try:
+            await self._send_and_check_amt8000_impl(frame, action_label)
+        finally:
+            self._pode_iniciar_status.set()
+            self._polling_wakeup.set()
+
+    async def _send_and_check_amt8000_impl(
+        self, frame: bytes, action_label: str | None = None
+    ) -> None:
         """Equivalente a ``_send_and_check`` para a AMT 8000.
 
         ⚠️ IMPORTANTE (limitação conhecida, ver README_DETALHADO.md): ao

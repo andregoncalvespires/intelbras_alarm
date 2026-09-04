@@ -10,6 +10,80 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Adicionado — scheduler próprio para o polling de status (substitui `update_interval` do `DataUpdateCoordinator`)
+
+Investigação aprofundada, com log real em produção e análise cruzada
+de arquitetura (usuário consultou uma segunda IA, e depois compartilhou
+uma versão própria da integração já parcialmente reescrita — comparada,
+validada e usada como base desta mudança): o `DataUpdateCoordinator`
+do próprio Home Assistant **não é preciso o suficiente para cadência
+sub-segundo**. Confirmado em três camadas independentes:
+
+1. **Código-fonte do HA** (lido diretamente, não só a documentação):
+   `_schedule_refresh()` calcula `next_refresh = int(loop.time()) +
+   self._microsecond + update_interval` — o `int(loop.time())` trunca
+   a parte fracionária do relógio monotônico; com `update_interval`
+   sub-segundo (0,25s), o horário calculado pode cair no passado,
+   fazendo `loop.call_at()` disparar quase imediatamente. Há inclusive
+   um comentário explícito no código do HA: *"DataUpdateCoordinator
+   does not need an exact update interval"*.
+2. **Simulação isolada**, com `time.monotonic()` real: reproduziu
+   exatamente o padrão relatado — rajadas de consultas a cada ~83ms,
+   seguidas de uma pausa de várias centenas de ms, repetindo a cada
+   segundo.
+3. **Log real** anexado pelo usuário, analisado de forma independente
+   (não só conferindo os números já calculados): 249 consultas de
+   status em 39,7s, mediana de 84ms entre envios, até 8 consultas no
+   mesmo segundo civil — bateu exatamente com o relatado.
+
+**Correção**: `update_interval=None` no `DataUpdateCoordinator` (que
+continua sendo usado para armazenar/comparar `PanelStatus`,
+`always_update=False`, notificar entidades e controlar
+disponibilidade — nada disso muda) e um scheduler próprio
+(`coordinator._polling_loop()`), com:
+
+- **Marca o início real de cada consulta no momento exato do envio**
+  (`on_sent`, callback passado a `PanelClient.send_command()`,
+  disparado dentro do lock, imediatamente antes de `writer.write()`)
+  — não no momento em que o ciclo é decidido, que pode ficar bem antes
+  se algo estiver segurando o lock.
+- **Nunca tenta "recuperar" consultas atrasadas**: se uma demorar (ex.:
+  bloqueada por um comando), a próxima só é permitida a partir do
+  intervalo configurado contado do início real da anterior — nunca
+  dispara em sequência para compensar o atraso.
+- **Fallback para falhas antes do envio** (`_last_status_cycle_started_
+  monotonic`): se a consulta falhar antes de conseguir escrever no
+  socket (`on_sent` nunca dispara), o scheduler ainda respeita um
+  intervalo mínimo entre tentativas, evitando um loop apertado nesse
+  cenário específico.
+- **Coalescimento de pedidos concorrentes**: os pontos que hoje pedem
+  um status extra após um comando (PGM/armar/desarmar/anular — eram 13
+  chamadas a `async_request_refresh()`) passam a usar
+  `async_request_status_refresh()`, que aguarda o próximo ciclo do
+  scheduler via `Future` — vários pedidos simultâneos compartilham a
+  mesma consulta, em vez de gerar uma para cada.
+- **Prioridade de comando sobre o scheduler de status** (pedido
+  explícito do usuário, adicionado por cima da base compartilhada):
+  novo evento `_pode_iniciar_status`, limpo por
+  `_send_and_check`/`_send_and_check_amt8000` (os dois únicos pontos
+  que enviam comandos de usuário) antes de enviar e restaurado depois
+  — o scheduler verifica essa flag antes de *iniciar* qualquer consulta
+  nova. Não interrompe uma consulta já em voo no momento em que o
+  comando chega (isso já é garantido pelo lock da conexão, sem precisar
+  de nada especial) — só impede que o scheduler dispare *outra* antes
+  do comando terminar.
+- Ciclo de vida limpo: `resume_polling()`/`async_stop_polling()`
+  criam/cancelam a task própria corretamente (mesma disciplina já
+  aplicada no bug do Receptor IP — sem task órfã após reload).
+
+Testado com as funções **reais**, extraídas diretamente do arquivo
+publicado (via AST, não uma reimplementação à parte), incluindo um
+`asyncio.Lock()` de verdade compartilhado entre uma consulta de status
+simulada e um comando simulado — confirmando a sequência completa:
+cadência estável (~250ms, sem rajada), nenhuma consulta nova durante a
+janela de prioridade de um comando, e o comando esperando corretamente
+uma consulta já em andamento terminar antes de agir.
+
 ### Adicionado — filtro na resposta bruta, antes de interpretar (complementar ao `always_update=False`)
 
 Segunda camada de filtro, pedida explicitamente pelo usuário depois de
