@@ -285,6 +285,25 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # mesmo quando o status ficou algum tempo esperando atrás de PGM,
         # tensão ou outra operação no lock global da conexão.
         self._last_status_sent_monotonic: float | None = None
+        # Prioridade de comando sobre o scheduler de status — pedido
+        # explícito do usuário, complementar ao mecanismo acima. O lock
+        # sozinho (FIFO) não garante que um comando "fure a fila" à
+        # frente de uma consulta de status que esteja prestes a começar
+        # (só garante que ele espera o que já está EM VOO no exato
+        # momento em que chega) — sem isso, um comando podia
+        # ocasionalmente ficar atrás não só da consulta ativa, mas
+        # também de uma nova que o scheduler disparasse por coincidência
+        # de tempo. `_send_and_check`/`_send_and_check_amt8000` (os dois
+        # únicos pontos que enviam comandos de usuário — PGM, sirene,
+        # pânico, anular zona, armar, desarmar) limpam esta flag antes
+        # de enviar e a restauram depois; `_polling_loop()` verifica
+        # antes de iniciar cada nova consulta de status. Começa
+        # "liberada" (nenhum comando em andamento).
+        #
+        # Removida sem intenção aparente num commit posterior (ba9516f,
+        # baseado numa versão mais antiga do arquivo) e restaurada aqui.
+        self._pode_iniciar_status = asyncio.Event()
+        self._pode_iniciar_status.set()
 
     def _mark_status_sent(self) -> None:
         """Callback do PanelClient no instante real de envio de um STATUS."""
@@ -330,6 +349,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         """
         try:
             while self._polling_enabled:
+                if not self._pode_iniciar_status.is_set():
+                    # Um comando está em andamento (PGM/arme/desarme/etc.)
+                    # — prioridade dele sobre o scheduler de status, pedido
+                    # explícito do usuário. Nem calcula o próximo horário
+                    # permitido enquanto isso não for liberado de novo.
+                    await self._pode_iniciar_status.wait()
+                    continue
+
                 delay = self._seconds_until_next_status()
                 if delay > 0:
                     self._polling_wakeup.clear()
@@ -345,6 +372,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     # Um comando pode acordar o scheduler antes da hora.
                     # Acordar não permite furar o intervalo mínimo.
                     if self._seconds_until_next_status() > 0:
+                        continue
+                    if not self._pode_iniciar_status.is_set():
+                        # Um comando começou durante a espera — revalida
+                        # do zero, mesma prioridade do topo do loop.
                         continue
 
                 self._last_status_cycle_started_monotonic = time.monotonic()
@@ -372,15 +403,67 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 self._polling_task = None
 
     def pause_polling(self) -> None:
-        """Pausa o scheduler próprio sem criar novas consultas de status."""
+        """Pausa o scheduler próprio sem criar novas consultas de status.
+
+        Nota (caso de borda, aceitável): se o loop estiver, no exato
+        momento desta chamada, esperando um comando terminar (prioridade
+        de comando, ver ``_pode_iniciar_status``), a pausa só é notada
+        depois que esse comando concluir — atraso pequeno e limitado à
+        duração de um único comando (tipicamente <100ms), não um loop
+        preso. ``async_stop_polling()`` (usado em unload/reload) não tem
+        essa limitação — usa ``task.cancel()``, que interrompe
+        imediatamente qualquer ponto de espera, independente do que o
+        loop estiver aguardando.
+
+        Bug real corrigido: como parar o scheduler significa que nenhuma
+        consulta nova será sequer TENTADA, o mecanismo natural do
+        ``DataUpdateCoordinator`` que marca ``last_update_success=False``
+        (que só acontece quando uma tentativa de refresh FALHA) nunca era
+        acionado — o valor ficava travado em ``True`` (do último sucesso)
+        indefinidamente, e ``CoordinatorEntity.available`` é exatamente
+        ``coordinator.last_update_success``. Resultado: todas as entidades
+        baseadas no coordinator (painel, sensores, PGMs) continuavam
+        aparecendo como disponíveis, com dados cada vez mais desatualizados,
+        mesmo com o switch de conexão desligado. ``async_set_update_error()``
+        é a forma pública e correta do próprio ``DataUpdateCoordinator``
+        para marcar isso manualmente e notificar as entidades na hora, sem
+        precisar de um ciclo de refresh de verdade para chegar lá.
+        """
         self._polling_enabled = False
         self._polling_wakeup.set()
         # Não deixa um comando já concluído ficar preso esperando um refresh
         # impossível depois que o usuário desligou a conexão.
         self._complete_status_refresh_waiters()
+        self.async_set_update_error(
+            PanelConnectionError("Comunicação com a central está desativada")
+        )
 
     def resume_polling(self) -> None:
-        """Inicia/retoma o scheduler usando o intervalo configurado."""
+        """Inicia/retoma o scheduler usando o intervalo configurado.
+
+        Usa ``entry.async_create_background_task()``, e não
+        ``hass.async_create_task()`` (usado na versão anterior deste
+        scheduler) — bug real, relatado pelo usuário e confirmado
+        diretamente no código-fonte do Home Assistant instalado
+        (``homeassistant/core.py``): ``hass.async_create_task()``
+        registra a task em ``hass._tasks``, um conjunto que
+        ``hass.async_block_till_done()`` espera terminar. Como
+        ``_polling_loop()`` roda indefinidamente enquanto a conexão
+        estiver ligada, qualquer chamada a ``async_block_till_done()``
+        durante ou logo após a inicialização do Home Assistant ficava
+        esperando uma task que nunca termina sozinha — causando a
+        inicialização exageradamente lenta relatada. O próprio
+        docstring do HA já orienta nesse sentido: "If you are using
+        this in your integration, use the create task methods on the
+        config entry instead." ``entry.async_create_background_task()``
+        usa ``hass._background_tasks`` em vez de ``hass._tasks``
+        internamente — explicitamente documentado como "Will not block
+        startup" e "Calls to async_block_till_done will not wait for
+        completion" — além de já cancelar a task automaticamente no
+        unload da config entry, complementar (não substitui) o
+        ``async_stop_polling()`` explícito chamado em
+        ``entry.async_on_unload()``.
+        """
         self._polling_enabled = True
         if self._polling_task is None or self._polling_task.done():
             self._polling_task = self.entry.async_create_background_task(
@@ -1266,6 +1349,22 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         return result
 
     async def _send_and_check(self, frame: bytes, action_label: str | None = None) -> None:
+        """Envia um comando de usuário com prioridade sobre o scheduler de
+        status (pedido explícito do usuário — ver ``self._pode_iniciar_status``
+        no ``__init__``): impede que o scheduler *inicie* uma nova consulta
+        de status enquanto este comando estiver em andamento. Não interrompe
+        uma consulta que já esteja em voo no momento em que o comando chega
+        — essa parte já é garantida pelo próprio lock da conexão, sem
+        precisar de nada especial aqui.
+        """
+        self._pode_iniciar_status.clear()
+        try:
+            await self._send_and_check_impl(frame, action_label)
+        finally:
+            self._pode_iniciar_status.set()
+            self._polling_wakeup.set()
+
+    async def _send_and_check_impl(self, frame: bytes, action_label: str | None = None) -> None:
         # Grava a ação sendo enviada ANTES da resposta chegar, e notifica
         # os listeners imediatamente (async_update_listeners, sem esperar
         # um novo ciclo de polling) — assim o sensor "Último comando" fica
@@ -1323,6 +1422,20 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             raise HomeAssistantError(err.message) from err
 
     async def _send_and_check_amt8000(self, frame: bytes, action_label: str | None = None) -> None:
+        """Envia um comando de usuário (AMT 8000) com prioridade sobre o
+        scheduler de status — mesmo mecanismo/motivo de ``_send_and_check``
+        para as demais famílias, ver docstring lá.
+        """
+        self._pode_iniciar_status.clear()
+        try:
+            await self._send_and_check_amt8000_impl(frame, action_label)
+        finally:
+            self._pode_iniciar_status.set()
+            self._polling_wakeup.set()
+
+    async def _send_and_check_amt8000_impl(
+        self, frame: bytes, action_label: str | None = None
+    ) -> None:
         """Equivalente a ``_send_and_check`` para a AMT 8000.
 
         ⚠️ IMPORTANTE (limitação conhecida, ver README_DETALHADO.md): ao

@@ -10,6 +10,58 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Corrigido — inicialização lenta, prioridade de comando removida sem intenção e entidades não ficando indisponíveis
+
+Três problemas relatados pelo usuário após a versão anterior (scheduler
+próprio de polling) entrar em uso real:
+
+**1. Inicialização do Home Assistant demorando exageradamente.** Causa
+confirmada direto no código-fonte do Home Assistant instalado
+(`homeassistant/core.py`): `resume_polling()` criava a task do
+scheduler com `hass.async_create_task()`, que registra a task em
+`hass._tasks` — um conjunto que `hass.async_block_till_done()` espera
+terminar. Como `_polling_loop()` roda indefinidamente enquanto a
+conexão estiver ligada, qualquer chamada a `async_block_till_done()`
+durante ou logo após a inicialização ficava esperando uma task que
+nunca termina sozinha. Corrigido usando
+`entry.async_create_background_task()` — documentado no próprio HA
+como "Will not block startup" e "Calls to async_block_till_done will
+not wait for completion", além de cancelar a task automaticamente no
+unload da config entry.
+
+**2. Dois commits (`ec86ea9`, `ba9516f`) tentaram corrigir o item 1**
+com uma versão testada pelo usuário — o diagnóstico da API de task
+estava certo, mas o segundo commit removeu por completo, sem indicação
+disso na mensagem (aparentemente por ter partido de uma versão mais
+antiga do arquivo como base), o mecanismo de prioridade de comando
+sobre o scheduler de status (`_pode_iniciar_status`, adicionado numa
+versão anterior desta mesma série de correções). Restaurado nesta
+versão, junto com a correção real do item 1.
+
+**3. Entidades não ficavam indisponíveis com o switch de conexão
+desligado.** `CoordinatorEntity.available` é `coordinator.
+last_update_success`, que só é marcado `False` quando uma tentativa de
+refresh *falha*. Como `pause_polling()` agora impede qualquer nova
+tentativa de sequer acontecer (em vez de deixar uma falhar, como no
+scheduler antigo do `DataUpdateCoordinator`), esse valor nunca mudava
+— ficava travado em `True` (do último sucesso) indefinidamente, com
+todas as entidades baseadas no coordinator (painel, sensores, PGMs)
+continuando a aparecer disponíveis, com dados cada vez mais
+desatualizados. Corrigido chamando `coordinator.async_set_update_error()`
+dentro de `pause_polling()` — método público do próprio
+`DataUpdateCoordinator` para marcar a falha manualmente e notificar as
+entidades na hora, sem precisar de um ciclo de refresh de verdade para
+chegar lá. Ao religar, `async_request_status_refresh()` (já chamado
+pelo switch) aciona um ciclo real, restaurando a disponibilidade
+normalmente em caso de sucesso.
+
+Os itens 1 e 3 testados com as funções reais extraídas do arquivo
+publicado (mesma técnica das correções anteriores desta série): o
+item 1 com o mock de `entry.async_create_background_task`, o item 3
+confirmando que `last_update_success` transiciona para `False` e
+notifica as entidades exatamente uma vez ao desligar a conexão, sem
+notificação duplicada em chamadas repetidas.
+
 ### Adicionado — scheduler próprio para o polling de status (substitui `update_interval` do `DataUpdateCoordinator`)
 
 Investigação aprofundada, com log real em produção e análise cruzada
