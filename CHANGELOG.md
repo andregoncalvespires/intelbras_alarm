@@ -10,6 +10,49 @@ registrada aqui antes de cada release.
 
 ## [2.1.0-beta]
 
+### Corrigido — botões de ação não refletiam disponibilidade (nem para indisponível, nem de volta)
+
+Bug real relatado pelo usuário: religar a conexão após reiniciar o
+Home Assistant com ela desligada não fazia os botões de ação (pânico,
+anular zonas, sincronizar nomes) voltarem a ficar disponíveis — e,
+investigando mais a fundo, desligar a conexão com o Home Assistant já
+rodando também nunca os deixava indisponíveis, apesar da propriedade
+`available` sempre ter calculado o valor certo (`coordinator.
+last_update_success`).
+
+Causa: `_IntelbrasButtonBase` não herda de `CoordinatorEntity` (decisão
+deliberada — esses botões não exibem nenhum dado do coordinator, só
+agem), mas por isso também não ganha de graça o mecanismo que
+`CoordinatorEntity` usa para reagir a mudanças — `BaseCoordinatorEntity.
+async_added_to_hass()`, no próprio `update_coordinator.py` do Home
+Assistant, registra um listener via `coordinator.async_add_listener()`
+que chama `async_write_ha_state()` sempre que o coordinator notifica.
+Sem herdar essa classe, `available` até calculava certo quando
+consultado, mas nada disparava uma nova escrita de estado quando
+`last_update_success` mudava — o botão ficava com o valor antigo
+travado até a próxima reescrita por qualquer outro motivo (raramente
+acontecendo, já que esses botões não têm outro estado que mude).
+
+Corrigido replicando manualmente só a parte necessária desse mecanismo
+em `_IntelbrasButtonBase.async_added_to_hass()`
+(`coordinator.async_add_listener(self.async_write_ha_state)`, via
+`self.async_on_remove()` para desinscrever corretamente) — sem herdar
+`CoordinatorEntity` por inteiro, mesmo motivo de antes. Confirmado
+seguro mesmo com `update_interval=None` do coordinator (scheduler
+próprio desta versão): `async_add_listener()` chama
+`_schedule_refresh()`, que já retorna imediatamente sem fazer nada
+quando `update_interval` é `None` — verificado direto no código-fonte
+do Home Assistant instalado, não reabre a porta para o bug de
+agendamento sub-segundo corrigido anteriormente nesta mesma série.
+
+Testado com a classe real extraída do arquivo publicado (mesma técnica
+das correções anteriores desta série), com um coordinator simulado
+reproduzindo `async_add_listener`/`async_update_listeners` do
+`DataUpdateCoordinator` de verdade — confirmando que o botão empurra um
+novo estado exatamente quando a disponibilidade muda, nas duas
+direções (ficar indisponível ao desligar, voltar a ficar disponível ao
+religar).
+
 ### Corrigido — inicialização lenta, prioridade de comando removida sem intenção e entidades não ficando indisponíveis
 
 Três problemas relatados pelo usuário após a versão anterior (scheduler

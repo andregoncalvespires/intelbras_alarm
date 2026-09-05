@@ -54,6 +54,26 @@ class _IntelbrasButtonBase(ButtonEntity):
     (o mesmo sinal que todas as outras entidades baseadas em
     ``CoordinatorEntity`` já usam), sem herdar de ``CoordinatorEntity``
     propriamente (esses botões não exibem dados do coordinator, só agem).
+
+    ⚠️ Bug real corrigido (relatado pelo usuário): ``available`` acima já
+    calculava o valor certo, mas nada disparava um novo
+    ``async_write_ha_state()`` quando ``last_update_success`` mudava — a
+    entidade ficava com o estado antigo travado até o próximo motivo
+    qualquer de reescrita. Efeito observado: reiniciar o Home Assistant
+    com a conexão desligada deixava os botões corretamente indisponíveis
+    de início, mas religar a conexão depois não trazia eles de volta —
+    e, na direção contrária, desligar a conexão com o Home Assistant já
+    rodando nem sequer os deixava indisponíveis, já que não havia essa
+    notificação em nenhuma das duas pontas. ``CoordinatorEntity`` resolve
+    isso registrando um listener em ``async_added_to_hass()``
+    (``BaseCoordinatorEntity`` em ``update_coordinator.py`` do próprio
+    Home Assistant) — replicado abaixo manualmente, sem herdar a classe
+    inteira (mesmo motivo do parágrafo acima). Seguro mesmo com
+    ``update_interval=None`` do coordinator: ``async_add_listener()``
+    chama ``_schedule_refresh()``, mas essa função já retorna
+    imediatamente sem fazer nada quando ``update_interval`` é ``None``
+    (confirmado direto no código-fonte do Home Assistant instalado) —
+    não reabre a porta para o bug de agendamento sub-segundo já corrigido.
     """
 
     _attr_has_entity_name = True
@@ -62,6 +82,12 @@ class _IntelbrasButtonBase(ButtonEntity):
     def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
         self._coordinator = coordinator
         self._attr_device_info = _device_info(entry)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._coordinator.async_add_listener(self.async_write_ha_state)
+        )
 
     @property
     def available(self) -> bool:
