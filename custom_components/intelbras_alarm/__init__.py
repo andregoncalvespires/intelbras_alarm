@@ -175,7 +175,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # A partir daqui, todo polling periódico passa pelo scheduler
         # próprio, usando o mesmo ``polling_interval`` configurável das
         # opções da integração.
-        coordinator.resume_polling()
+
 
     if coordinator.supports_voltage_reading:
         # Tensão da fonte/bateria (comando [1, 0x17] dentro do 0xE7, ver
@@ -244,6 +244,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+
+    # O scheduler de STATUS é permanente e só deve começar depois que todas
+    # as plataformas da config entry terminaram o setup. Assim o polling
+    # rápido não disputa o socket/event loop enquanto as entidades ainda
+    # estão sendo criadas. Se a conexão estiver desligada, o switch chamará
+    # resume_polling() quando o usuário a religar.
+    if connection_enabled:
+        coordinator.resume_polling()
+
     return True
 
 
