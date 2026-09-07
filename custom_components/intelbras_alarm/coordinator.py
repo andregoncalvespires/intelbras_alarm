@@ -1755,16 +1755,21 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     await self._async_close_legacy_eeprom_connection(
                         "consulta de tensão"
                     )
-            # Pausa de acomodação (heurística, não uma medição exata,
-            # mantida como margem de segurança adicional — a causa raiz
-            # observada era dessincronização de stream por bytes
-            # residuais, já corrigida acima pelo fechamento da conexão;
-            # esta pausa cobre qualquer necessidade residual de a central
-            # "se recompor" além disso). Fora da transação de propósito:
-            # a conexão já foi fechada acima, então isto não seria mais
-            # necessário para o próximo comando conseguir o lock — só
-            # atrasa a atualização dos sensores de tensão em si.
-            await asyncio.sleep(1.0)
+                # Pausa de acomodação (heurística, não uma medição exata):
+                # intenção original deste sleep (desde a primeira versão que
+                # o introduziu), restaurada aqui após uma análise externa
+                # apontar corretamente que uma versão anterior desta mesma
+                # correção tinha deixado o sleep FORA do `async with` — nesse
+                # caso, o lock já estaria liberado antes da pausa, deixando o
+                # scheduler de status livre para abrir uma conexão nova e
+                # enviar um STATUS durante o próprio segundo que deveria ser
+                # de acomodação, sem proteger nada — só atrasando a
+                # atualização dos sensores de tensão em si, sem efeito real
+                # sobre a central. Aqui dentro do `async with`, de propósito:
+                # mantém o lock reservado durante a pausa inteira, dando à
+                # central um segundo sem nenhuma tentativa de nova conexão
+                # antes do próximo STATUS, mesmo com o TCP já fechado acima.
+                await asyncio.sleep(1.0)
             if not resposta.valid_checksum:
                 _LOGGER.warning("Consulta de tensão: checksum inválido na resposta")
                 return

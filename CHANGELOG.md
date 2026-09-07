@@ -10,6 +10,32 @@ registrada aqui antes de cada release.
 
 ## [2.1.1-beta]
 
+### Corrigido — pausa de acomodação após consulta de tensão não protegia mais nada (analisado por revisor externo)
+
+Um usuário compartilhou uma análise externa comparando esta versão
+contra uma versão própria já testada, apontando algo específico:
+`await asyncio.sleep(1.0)` em `async_refresh_voltage()` tinha ficado,
+ao longo dos refatoramentos desta série de correções, posicionado
+**fora** do `async with self.client.transaction():` — ou seja, depois
+do lock já liberado. Conferido e confirmado: a intenção original desse
+sleep, desde o commit que o introduziu, sempre foi "pausa de
+acomodação... **antes de liberar a conexão** de volta pro polling
+rápido" — mas a posição atual não cumpria mais isso; só atrasava a
+atualização dos sensores de tensão em si, sem nenhum efeito sobre a
+central ou sobre quando o próximo status poderia ser enviado. O próprio
+comentário no código já admitia isso, sem que eu tivesse revisado se
+valia a pena manter mesmo assim.
+
+Corrigido movendo o `sleep(1.0)` para dentro do `async with`, logo após
+o fechamento da conexão — restaurando o comportamento original: o lock
+fica reservado durante a pausa inteira, então o scheduler de status não
+consegue abrir uma conexão nova nem enviar nada até o segundo completo
+ter passado desde o fechamento. Testado com um cenário reproduzindo a
+disputa real pelo lock (`asyncio.Lock()` de verdade, uma tarefa
+simulando a consulta de tensão e outra pedindo o lock durante a pausa)
+— confirmando que a segunda tarefa só consegue o lock exatamente após
+o segundo completo, não antes.
+
 ### Adicionado — opção para desativar a consulta de tensão independente da senha do app remoto
 
 Pedido do usuário, motivado por uma lacuna real na correção anterior
