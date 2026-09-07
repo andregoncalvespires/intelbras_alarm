@@ -21,6 +21,72 @@ class PanelConnectionError(Exception):
     """Falha ao conectar ou comunicar com a central."""
 
 
+class _ReadTimeout(Exception):
+    """Timeout de leitura preservando os bytes recebidos parcialmente."""
+
+    def __init__(self, expected: int, partial: bytes) -> None:
+        self.expected = expected
+        self.partial = partial
+        super().__init__(f"timeout lendo {len(partial)}/{expected} bytes")
+
+
+async def _read_exactly_with_timeout(
+    reader: asyncio.StreamReader,
+    size: int,
+    timeout: float,
+) -> bytes:
+    """Lê exatamente ``size`` bytes com um deadline total.
+
+    BUG REAL corrigido (relatado pelo usuário, com diagnóstico próprio:
+    log mostrando "recebidos 60/73" batendo exatamente com bytes
+    residuais de dessincronização de stream + o frame real — ver
+    ``PanelClient.transaction()``/coordinator para a causa raiz completa
+    dessa dessincronização, corrigida fechando a conexão após toda
+    sessão ``0xE7``): ``StreamReader.readexactly()`` combinado com
+    ``asyncio.wait_for()`` informa apenas que o timeout ocorreu; os
+    bytes que já chegaram ficam no buffer interno do ``StreamReader`` e
+    não são expostos pelo ``TimeoutError``. Para diagnóstico da central
+    precisamos saber se, por exemplo, chegaram 0/56, 20/56 ou 55/56
+    bytes antes do timeout.
+
+    Esta rotina consome os dados em blocos e mantém um único deadline
+    para a leitura solicitada. Quem chama passa apenas o tempo
+    RESTANTE do deadline global da troca, portanto o timeout NÃO é
+    reiniciado entre drain, cabeçalho e corpo nem a cada pedaço
+    recebido — outro bug real corrigido junto: antes, ``drain()`` não
+    tinha timeout NENHUM (podia travar indefinidamente se o buffer de
+    escrita TCP nunca esvaziasse), e cabeçalho/corpo recebiam cada um
+    um ``self._timeout`` novo — uma troca podia levar até ~3x o timeout
+    configurado antes de finalmente falhar, apesar das próprias
+    mensagens de erro já falarem em "tempo limite total".
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    data = bytearray()
+
+    while len(data) < size:
+        remaining_time = deadline - loop.time()
+        if remaining_time <= 0:
+            raise _ReadTimeout(size, bytes(data))
+
+        try:
+            chunk = await asyncio.wait_for(
+                reader.read(size - len(data)),
+                timeout=remaining_time,
+            )
+        except asyncio.TimeoutError as err:
+            raise _ReadTimeout(size, bytes(data)) from err
+
+        if not chunk:
+            # Mantém a mesma semântica anterior de readexactly(): conexão
+            # encerrada antes de completar a quantidade esperada.
+            raise asyncio.IncompleteReadError(bytes(data), size)
+
+        data.extend(chunk)
+
+    return bytes(data)
+
+
 class PanelClient:
     """Mantém uma conexão TCP persistente com a central e serializa comandos."""
 
@@ -76,6 +142,20 @@ class PanelClient:
     async def disconnect(self) -> None:
         async with self._lock:
             await self._close_locked()
+
+    async def disconnect_in_transaction(self) -> None:
+        """Fecha a conexão TCP com o lock já adquirido por ``transaction()``.
+
+        Não chama ``disconnect()`` porque ele tentaria adquirir ``self._lock``
+        novamente e causaria deadlock. Usado ao encerrar qualquer sessão
+        legada 0xE7: descartamos o socket inteiro antes de voltar ao protocolo
+        normal, independentemente de sucesso, autenticação negada ou exceção
+        — ver ``coordinator._async_close_legacy_eeprom_connection`` para o
+        motivo (bug real: bytes residuais deixados no stream por uma sessão
+        0xE7 anterior dessincronizavam o leitor genérico da próxima consulta
+        de status).
+        """
+        await self._close_locked()
 
     async def _close_locked(self) -> None:
         self._connected = False
@@ -208,6 +288,9 @@ class PanelClient:
 
         assert self._writer is not None
         assert self._reader is not None
+        loop = asyncio.get_running_loop()
+        exchange_started = loop.time()
+        deadline = exchange_started + self._timeout
         try:
             # Log só AQUI (depois de conseguir a vez na fila do lock),
             # de propósito — reflete o momento em que o comando
@@ -222,41 +305,66 @@ class PanelClient:
             if on_sent is not None:
                 on_sent()
             self._writer.write(frame)
-            await self._writer.drain()
+            try:
+                await asyncio.wait_for(
+                    self._writer.drain(),
+                    timeout=max(0.0, deadline - loop.time()),
+                )
+            except asyncio.TimeoutError as err:
+                elapsed = loop.time() - exchange_started
+                await self._close_locked()
+                raise PanelConnectionError(
+                    f"Falha de comunicação com a central{label}: tempo limite total "
+                    f"da troca excedido ({self._timeout}s) durante o envio/drain "
+                    f"({elapsed:.3f}s)"
+                ) from err
+
             # O primeiro byte do frame de resposta é o "Nº Bytes"; a partir
             # dele sabemos exatamente quantos bytes ainda faltam ler
             # (comando + conteúdo + checksum), evitando misturar respostas.
             # A leitura é feita em duas etapas (cabeçalho, depois o
             # resto) de propósito: se o timeout estourar na segunda
-            # etapa, pelo menos sabemos quantos bytes a central chegou
-            # a PROMETER (o cabeçalho já foi lido) — informação melhor
-            # que nada para o log, mesmo sem saber quantos bytes do
-            # "resto" chegaram de fato (isso exigiria um loop de
-            # leitura manual, que não temos hoje).
+            # etapa, sabemos tanto quantos bytes a central PROMETEU no
+            # cabeçalho quanto quantos realmente chegaram antes do
+            # deadline. `_read_exactly_with_timeout()` faz a leitura em
+            # blocos justamente para preservar esse parcial no log.
+            response_wait_started = loop.time()
             try:
-                header = await asyncio.wait_for(
-                    self._reader.readexactly(1), timeout=self._timeout
+                header = await _read_exactly_with_timeout(
+                    self._reader, 1, max(0.0, deadline - loop.time())
                 )
-            except asyncio.TimeoutError as err:
+            except _ReadTimeout as err:
+                elapsed = loop.time() - response_wait_started
                 await self._close_locked()
                 raise PanelConnectionError(
-                    f"Falha de comunicação com a central{label}: tempo limite "
-                    f"excedido ({self._timeout}s) — nenhum byte de resposta "
-                    f"chegou (nem o cabeçalho)"
+                    f"Falha de comunicação com a central{label}: tempo limite total "
+                    f"da resposta excedido ({self._timeout}s) — cabeçalho incompleto: "
+                    f"recebidos {len(err.partial)}/{err.expected} bytes em "
+                    f"{elapsed:.3f}s"
                 ) from err
 
             num_bytes = header[0]
+            expected_remainder = num_bytes + 1
+            header_elapsed = loop.time() - response_wait_started
+            remainder_wait_started = loop.time()
             try:
-                remainder = await asyncio.wait_for(
-                    self._reader.readexactly(num_bytes + 1), timeout=self._timeout
+                remainder = await _read_exactly_with_timeout(
+                    self._reader,
+                    expected_remainder,
+                    max(0.0, deadline - loop.time()),
                 )
-            except asyncio.TimeoutError as err:
+            except _ReadTimeout as err:
+                remainder_elapsed = loop.time() - remainder_wait_started
+                partial_hex = err.partial.hex(" ").upper() if err.partial else "<nenhum>"
                 await self._close_locked()
                 raise PanelConnectionError(
-                    f"Falha de comunicação com a central{label}: tempo limite "
-                    f"excedido ({self._timeout}s) — central prometeu "
-                    f"{num_bytes + 1} bytes após o cabeçalho, mas não terminou "
-                    f"de enviar a tempo"
+                    f"Falha de comunicação com a central{label}: tempo limite total "
+                    f"da resposta excedido ({self._timeout}s) — central prometeu "
+                    f"{expected_remainder} bytes após o cabeçalho; recebidos "
+                    f"{len(err.partial)}/{expected_remainder} bytes "
+                    f"({1 + len(err.partial)}/{1 + expected_remainder} do frame). "
+                    f"Cabeçalho chegou em {header_elapsed:.3f}s; restante aguardado "
+                    f"por {remainder_elapsed:.3f}s. Parcial={partial_hex}"
                 ) from err
             raw = header + remainder
         except asyncio.IncompleteReadError as err:
@@ -272,6 +380,7 @@ class PanelClient:
             raise PanelConnectionError(
                 f"Falha de comunicação com a central{label}: {detail}"
             ) from err
+
 
         try:
             return parse_frame(raw)

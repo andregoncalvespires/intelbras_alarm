@@ -8,6 +8,95 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.1.1-beta]
+
+### Corrigido — dessincronização de stream TCP após sessão 0xE7 (causa real de timeouts na consulta de status)
+
+Diagnóstico do próprio usuário, com log preciso: a consulta de status
+não estava de fato recebendo os 73 bytes esperados. O socket ficava
+dessincronizado — 4 bytes residuais de uma sessão `0xE7` anterior
+(ex.: `48 FF 91 AF`) precediam o frame de status real e correto. O
+leitor genérico pega o primeiro byte residual (`48`) e o interpreta
+como "Nº Bytes", esperando 73 bytes; recebe os 3 bytes residuais
+restantes + o frame de status inteiro de 57 bytes = 60 bytes — batendo
+exatamente com o padrão observado no log ("recebidos 60/73") — e fica
+esperando os 13 bytes que faltam, que nunca virão, até estourar o
+timeout. **Esse erro não era resolvido aumentando o timeout — a causa
+é enquadramento/dessincronização do stream, não tempo insuficiente.**
+
+Usuário comparou uma versão própria (testada e com diagnóstico
+correto) contra a nossa; após análise comparativa (ver conversa),
+foram adotados 3 itens dessa versão, mais uma correção adicional
+encontrada durante o trabalho:
+
+**1. Timeout total único, sem reiniciar entre etapas, preservando bytes
+parciais.** `drain()` não tinha timeout NENHUM antes (podia travar
+indefinidamente se o buffer de escrita TCP nunca esvaziasse); cabeçalho
+e corpo da resposta recebiam cada um um timeout novo — uma troca podia
+levar até ~3x o timeout configurado antes de finalmente falhar, apesar
+das próprias mensagens de erro já falarem em "tempo limite total".
+Corrigido com `_read_exactly_with_timeout()` (novo, em `panel_client.py`
+e `panel_client_amt8000.py`): um único `deadline` calculado uma vez,
+reaproveitado em drain + cabeçalho + corpo, preservando quantos bytes
+chegaram antes do timeout estourar (informação perdida antes). Testado
+com sockets reais (não mockados): leitura normal, timeout com parcial
+preservado (reproduzindo o cenário exato do relato — `48 FF 91 AF` —
+como teste automatizado) e confirmação de que o corpo não ganha um
+timeout novo e cheio depois do cabeçalho.
+
+**2. `disconnect_in_transaction()`** (novo, nos dois clientes): fecha o
+TCP com o lock já adquirido por `transaction()`, sem tentar readquiri-lo
+(evitaria deadlock). Infraestrutura de apoio ao item 3.
+
+**3. Fecha a conexão TCP após toda sessão `0xE7`, sucesso ou falha.**
+Decisão deliberada (não só nos caminhos de falha): qualquer saída de
+uma sessão `0xE7` — autenticação negada, checksum inválido, erro de
+protocolo, ou sucesso completo — força o próximo comando (status, PGM,
+etc.) a começar num stream TCP nunca usado, sem chance de arrastar
+sobra nenhuma. Aplicado em `_async_legacy_eeprom_session()` (leitura de
+nomes/eventos) e `async_refresh_voltage()` (consulta de tensão a cada 5
+minutos), via `try`/`finally` + novo
+`coordinator._async_close_legacy_eeprom_connection()`. Custo aceito:
+reconectar após cada leitura de tensão (a cada 5 minutos) ou sincronização
+de nomes — não a cada ciclo rápido de status. A pausa de acomodação de 1s
+já existente na consulta de tensão foi mantida como margem de segurança
+adicional, reposicionada para depois do fechamento da conexão (não
+afeta mais o próximo comando, que já reconecta do zero de qualquer
+forma).
+
+**Não adotado da versão comparada**: um comando de logout explícito
+0xE7 (`montar_comando_logout` + leitura de resposta fixa) estava
+implementado ali, mas sem uso em nenhum lugar — a própria versão testada
+optou pela abordagem mais simples (fechar o TCP direto) em vez dessa,
+conforme documentado no código-fonte comparado. Não incluído por não
+ter sido de fato exercitado.
+
+### Corrigido — consulta de tensão continuava rodando após remover a senha do app remoto na reconfiguração
+
+Bug real relatado pelo usuário. A causa exata do mecanismo de
+recarregamento que permitia isso não foi isolada com certeza total — a
+sequência de unload/reload do próprio Home Assistant, conferida direto
+no código-fonte, parece correta, e a checagem de elegibilidade
+(`supports_voltage_reading`) já existia tanto no registro do timer
+quanto dentro da própria função. Mesmo assim, `self._legacy_eeprom_password`
+era lido de `entry.data` **uma única vez**, em `__init__`, e guardado
+num atributo simples — se por qualquer motivo uma instância antiga do
+coordinator sobrevivesse à reconfiguração, ela nunca saberia da
+remoção da senha.
+
+Corrigido tornando `_legacy_eeprom_password` uma `@property` que lê
+`self.entry.data` a cada consulta, em vez de um valor travado no
+momento da criação — `entry` é o mesmo objeto mutado no lugar por
+`async_update_entry()` (confirmado direto no código-fonte do Home
+Assistant) independentemente de qual instância do coordinator o mantém
+referenciado, então mesmo numa instância antiga isso passa a refletir a
+mudança imediatamente. Cobre de graça tanto `supports_legacy_eeprom`
+quanto `supports_voltage_reading` (ambos dependem deste valor) e a
+montagem do frame de autenticação em si. Testado com a property real
+extraída do arquivo publicado via AST, mutando `entry.data` na mesma
+instância de coordinator sem recriá-la — confirmando que a mudança é
+refletida na hora.
+
 ## [2.1.0-beta]
 
 ### Corrigido — botões de ação não refletiam disponibilidade (nem para indisponível, nem de volta)

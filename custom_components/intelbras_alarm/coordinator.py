@@ -116,13 +116,6 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         self._partition_passwords = partition_passwords or {}
         self.family = family
         self.model_key = model_key
-        # Senha opcional de leitura de mensagens (0xE7 + identificação),
-        # ver protocol_legacy_eeprom.py e supports_legacy_eeprom abaixo.
-        # Em branco por padrão -- só habilita a funcionalidade se o
-        # usuário preencher explicitamente na configuração.
-        self._legacy_eeprom_password: str | None = entry.data.get(
-            CONF_LEGACY_EEPROM_PASSWORD
-        ) or None
         self.zone_names: dict[int, str] = {}
         # Nomes de usuário, lidos junto com os de zona (mesma chamada,
         # mesma condição de disponibilidade — ver async_refresh_zone_names).
@@ -565,6 +558,33 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         except (ValueError, AttributeError):
             return False
         return atual >= minimo
+
+    @property
+    def _legacy_eeprom_password(self) -> str | None:
+        """Senha opcional de leitura de mensagens (0xE7 + identificação),
+        ver ``protocol_legacy_eeprom.py`` e ``supports_legacy_eeprom``
+        abaixo. Em branco por padrão — só habilita a funcionalidade se o
+        usuário preencher explicitamente na configuração.
+
+        BUG REAL corrigido (relatado pelo usuário): antes, este valor era
+        lido de ``entry.data`` **uma única vez**, em ``__init__``, e
+        guardado num atributo simples — se o usuário removesse a senha
+        pela reconfiguração da integração, a consulta de tensão
+        periódica continuava rodando (comportamento incorreto: a senha
+        removida deveria desativar esse serviço). Não consegui isolar
+        com certeza total o mecanismo exato do recarregamento que
+        deixava uma instância antiga do coordinator viva — a sequência
+        de unload/reload do próprio Home Assistant, conferida direto no
+        código-fonte, parece correta — mas ``entry`` é o mesmo objeto
+        mutado no lugar por ``async_update_entry()`` (confirmado também
+        direto no código-fonte do HA) independentemente de qual
+        instância do coordinator o mantém referenciado. Lendo direto de
+        ``self.entry.data`` a cada consulta, em vez de confiar num valor
+        travado no momento da criação, fecha essa lacuna por completo,
+        não importa a causa exata por trás da instância antiga
+        persistir.
+        """
+        return self.entry.data.get(CONF_LEGACY_EEPROM_PASSWORD) or None
 
     @property
     def supports_legacy_eeprom(self) -> bool:
@@ -1497,6 +1517,52 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # comando, `0xE7` incluso (`protocol.parse_frame()` não assume nenhum
     # comando específico).
     # ------------------------------------------------------------------
+    async def _async_close_legacy_eeprom_connection(self, context: str) -> None:
+        """Encerra a conexão TCP após qualquer sessão autenticada ``0xE7``
+        (leitura de EEPROM legada ou consulta de tensão), sucesso ou falha.
+
+        BUG REAL corrigido (diagnóstico do próprio usuário, com log
+        batendo exatamente): sem isso, bytes residuais podiam ficar no
+        stream TCP após uma sessão ``0xE7`` (ex.: resposta de logout
+        implícito da central, ou qualquer sobra do protocolo com sessão),
+        dessincronizando o leitor genérico da PRÓXIMA consulta de status
+        — que interpretava o primeiro byte residual como "Nº Bytes" e
+        ficava esperando um total que nunca fecha. Log observado:
+        "recebidos 60/73" — batia exatamente com 3 bytes residuais + o
+        frame de status real de 57 bytes, confirmando dessincronização de
+        enquadramento, não timeout insuficiente (por isso não adianta só
+        aumentar o timeout — a causa é outra).
+
+        Fecha incondicionalmente, mesmo em sucesso: qualquer saída de uma
+        sessão ``0xE7`` (autenticação negada, checksum inválido, erro de
+        protocolo, ou sucesso completo) força o próximo comando (status,
+        PGM, etc.) a começar num stream TCP nunca usado, sem chance de
+        arrastar sobra nenhuma. O custo é reconectar a cada leitura —
+        aceitável: tensão roda só a cada 5 minutos, e a leitura legada de
+        nomes/eventos é esporádica (configuração inicial ou pedido
+        manual).
+
+        Deve ser chamado ainda dentro de ``client.transaction()`` — usa
+        ``disconnect_in_transaction()``, não ``disconnect()``, para não
+        tentar readquirir o lock e causar deadlock.
+        """
+        if not self.client.connected:
+            return
+        try:
+            await self.client.disconnect_in_transaction()
+            _LOGGER.debug(
+                "Sessão 0xE7: conexão TCP encerrada após %s (evita "
+                "dessincronizar a próxima consulta de status)",
+                context,
+            )
+        except (OSError, asyncio.TimeoutError) as err:
+            # _close_locked() já protege wait_closed() com timeout; isto é
+            # apenas uma salvaguarda para não mascarar o resultado principal
+            # (o próximo comando reconecta do zero de qualquer forma).
+            _LOGGER.warning(
+                "Sessão 0xE7: falha ao encerrar TCP após %s (%s)", context, err
+            )
+
     async def _async_legacy_eeprom_session(self, paginas_info: list[tuple[int, int]]) -> bytes:
         """Autentica com a senha de leitura e lê todas as páginas pedidas
         em sequência, na conexão persistente já existente.
@@ -1518,53 +1584,64 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         t_inicio = time.monotonic()
         try:
             async with self.client.transaction():
-                frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
-                resposta_auth = await self.client.send_command_in_transaction(
-                    frame_auth, context="identificação (senha de leitura de mensagens)"
-                )
-                _LOGGER.debug(
-                    "Sessão legada 0xE7: autenticação respondida em %.3fs",
-                    time.monotonic() - t_inicio,
-                )
-                if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
-                    raise HomeAssistantError(
-                        "Falha na identificação com a senha de leitura de mensagens "
-                        "configurada — confira se está correta (6 dígitos, "
-                        "\"Senha Acesso Remoto\" no app AMT Mobile)"
+                try:
+                    # O fechamento da conexão (finally abaixo) deve cobrir a
+                    # sessão 0xE7 INTEIRA, inclusive autenticação negada, erro
+                    # de protocolo e qualquer exceção durante as leituras —
+                    # ver `_async_close_legacy_eeprom_connection` para o motivo.
+                    frame_auth = legacy_eeprom.montar_comando_autenticar(
+                        self._legacy_eeprom_password
                     )
-                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
-
-                dados = bytearray()
-                for endereco, tamanho in paginas_info:
-                    frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
-                    t_pagina = time.monotonic()
-                    resposta = await self.client.send_command_in_transaction(
-                        frame, context=f"leitura legada de EEPROM 0x{endereco:04X}"
+                    resposta_auth = await self.client.send_command_in_transaction(
+                        frame_auth, context="identificação (senha de leitura de mensagens)"
                     )
                     _LOGGER.debug(
-                        "Sessão legada 0xE7: página 0x%04X respondida em %.3fs "
-                        "(%.3fs desde o início da sessão)",
-                        endereco,
-                        time.monotonic() - t_pagina,
+                        "Sessão legada 0xE7: autenticação respondida em %.3fs",
                         time.monotonic() - t_inicio,
                     )
-                    if not resposta.valid_checksum:
-                        raise UpdateFailed(
-                            f"Checksum inválido lendo EEPROM legada no endereço 0x{endereco:04X}"
+                    if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+                        raise HomeAssistantError(
+                            "Falha na identificação com a senha de leitura de mensagens "
+                            "configurada — confira se está correta (6 dígitos, "
+                            "\"Senha Acesso Remoto\" no app AMT Mobile)"
                         )
-                    # content = [2 bytes de cabeçalho, sempre presentes nesse
-                    # protocolo — confirmados em toda captura real analisada,
-                    # não dependem do endereço] + dados úteis. Ver
-                    # README_DETALHADO.md, seção "Protocolo legado".
-                    dados_uteis = legacy_eeprom.extrair_dados_leitura(resposta.content, tamanho)
-                    if dados_uteis is None:
-                        raise UpdateFailed(
-                            f"Resposta incompleta lendo EEPROM legada no endereço "
-                            f"0x{endereco:04X}: recebidos {len(resposta.content)} bytes de "
-                            f"conteúdo, esperados pelo menos {2 + tamanho}"
-                        )
-                    dados += dados_uteis
                     await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+
+                    dados = bytearray()
+                    for endereco, tamanho in paginas_info:
+                        frame = legacy_eeprom.montar_comando_leitura(endereco, tamanho)
+                        t_pagina = time.monotonic()
+                        resposta = await self.client.send_command_in_transaction(
+                            frame, context=f"leitura legada de EEPROM 0x{endereco:04X}"
+                        )
+                        _LOGGER.debug(
+                            "Sessão legada 0xE7: página 0x%04X respondida em %.3fs "
+                            "(%.3fs desde o início da sessão)",
+                            endereco,
+                            time.monotonic() - t_pagina,
+                            time.monotonic() - t_inicio,
+                        )
+                        if not resposta.valid_checksum:
+                            raise UpdateFailed(
+                                f"Checksum inválido lendo EEPROM legada no endereço 0x{endereco:04X}"
+                            )
+                        # content = [2 bytes de cabeçalho, sempre presentes nesse
+                        # protocolo — confirmados em toda captura real analisada,
+                        # não dependem do endereço] + dados úteis. Ver
+                        # README_DETALHADO.md, seção "Protocolo legado".
+                        dados_uteis = legacy_eeprom.extrair_dados_leitura(resposta.content, tamanho)
+                        if dados_uteis is None:
+                            raise UpdateFailed(
+                                f"Resposta incompleta lendo EEPROM legada no endereço "
+                                f"0x{endereco:04X}: recebidos {len(resposta.content)} bytes de "
+                                f"conteúdo, esperados pelo menos {2 + tamanho}"
+                            )
+                        dados += dados_uteis
+                        await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+                finally:
+                    await self._async_close_legacy_eeprom_connection(
+                        "sessão de leitura de EEPROM"
+                    )
         except PanelConnectionError as err:
             raise UpdateFailed(str(err)) from err
         _LOGGER.debug(
@@ -1622,43 +1699,54 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # status podia se intercalar NO MEIO da troca autenticada.
             t_inicio = time.monotonic()
             async with self.client.transaction():
-                frame_auth = legacy_eeprom.montar_comando_autenticar(self._legacy_eeprom_password)
-                resposta_auth = await self.client.send_command_in_transaction(
-                    frame_auth, context="identificação (consulta de tensão)"
-                )
-                _LOGGER.debug(
-                    "Consulta de tensão: autenticação enviada e respondida em %.3fs",
-                    time.monotonic() - t_inicio,
-                )
-                if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
-                    _LOGGER.warning(
-                        "Consulta de tensão: falha na identificação com a senha de leitura "
-                        "configurada — tentando de novo em 5 minutos"
+                try:
+                    frame_auth = legacy_eeprom.montar_comando_autenticar(
+                        self._legacy_eeprom_password
                     )
-                    return
-                await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
+                    resposta_auth = await self.client.send_command_in_transaction(
+                        frame_auth, context="identificação (consulta de tensão)"
+                    )
+                    _LOGGER.debug(
+                        "Consulta de tensão: autenticação enviada e respondida em %.3fs",
+                        time.monotonic() - t_inicio,
+                    )
+                    if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
+                        _LOGGER.warning(
+                            "Consulta de tensão: falha na identificação com a senha de "
+                            "leitura configurada — tentando de novo em 5 minutos"
+                        )
+                        return
+                    await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
 
-                frame = legacy_eeprom.montar_comando_status_tensao()
-                t_antes_consulta = time.monotonic()
-                resposta = await self.client.send_command_in_transaction(
-                    frame, context="consulta de tensão"
-                )
-                _LOGGER.debug(
-                    "Consulta de tensão: comando de tensão enviado e respondido em %.3fs "
-                    "(%.3fs desde o início da transação)",
-                    time.monotonic() - t_antes_consulta,
-                    time.monotonic() - t_inicio,
-                )
-            # Pausa de acomodação (heurística, não uma medição exata):
-            # timeouts reais na consulta de status normal foram
-            # observados sistematicamente coincidindo com múltiplos de 5
-            # minutos (ciclo da tensão) — indício de que a central
-            # precisa de um instante para "se recompor" depois dessa
-            # troca autenticada via 0xE7, antes de responder prontamente
-            # ao próximo 0x5A/0x5B do polling rápido. Aplicada aqui,
-            # cobrindo qualquer desfecho a partir deste ponto (sucesso
-            # ou falha de checksum/parse) — o exchange completo com a
-            # central já aconteceu de qualquer forma.
+                    frame = legacy_eeprom.montar_comando_status_tensao()
+                    t_antes_consulta = time.monotonic()
+                    resposta = await self.client.send_command_in_transaction(
+                        frame, context="consulta de tensão"
+                    )
+                    _LOGGER.debug(
+                        "Consulta de tensão: comando de tensão enviado e respondido em %.3fs "
+                        "(%.3fs desde o início da transação)",
+                        time.monotonic() - t_antes_consulta,
+                        time.monotonic() - t_inicio,
+                    )
+                finally:
+                    # Fecha a conexão ainda dentro da transação (mesmo
+                    # motivo/mecanismo de `_async_legacy_eeprom_session` —
+                    # ver `_async_close_legacy_eeprom_connection`). Cobre
+                    # tanto o `return` de autenticação negada acima quanto
+                    # o caminho de sucesso.
+                    await self._async_close_legacy_eeprom_connection(
+                        "consulta de tensão"
+                    )
+            # Pausa de acomodação (heurística, não uma medição exata,
+            # mantida como margem de segurança adicional — a causa raiz
+            # observada era dessincronização de stream por bytes
+            # residuais, já corrigida acima pelo fechamento da conexão;
+            # esta pausa cobre qualquer necessidade residual de a central
+            # "se recompor" além disso). Fora da transação de propósito:
+            # a conexão já foi fechada acima, então isto não seria mais
+            # necessário para o próximo comando conseguir o lock — só
+            # atrasa a atualização dos sensores de tensão em si.
             await asyncio.sleep(1.0)
             if not resposta.valid_checksum:
                 _LOGGER.warning("Consulta de tensão: checksum inválido na resposta")

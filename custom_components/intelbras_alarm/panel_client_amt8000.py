@@ -43,6 +43,49 @@ class PanelConnectionErrorAmt8000(Exception):
     """Falha ao conectar, autenticar ou comunicar com a central AMT 8000."""
 
 
+class _ReadTimeout(Exception):
+    """Timeout de leitura preservando os bytes recebidos parcialmente."""
+
+    def __init__(self, expected: int, partial: bytes) -> None:
+        self.expected = expected
+        self.partial = partial
+        super().__init__(f"timeout lendo {len(partial)}/{expected} bytes")
+
+
+async def _read_exactly_with_timeout(
+    reader: asyncio.StreamReader,
+    size: int,
+    timeout: float,
+) -> bytes:
+    """Lê exatamente ``size`` bytes com um deadline total e preserva o
+    parcial recebido em caso de timeout — mesmo mecanismo e mesmo motivo
+    de ``panel_client._read_exactly_with_timeout`` (ver lá o histórico
+    completo do bug real corrigido)."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    data = bytearray()
+
+    while len(data) < size:
+        remaining_time = deadline - loop.time()
+        if remaining_time <= 0:
+            raise _ReadTimeout(size, bytes(data))
+
+        try:
+            chunk = await asyncio.wait_for(
+                reader.read(size - len(data)),
+                timeout=remaining_time,
+            )
+        except asyncio.TimeoutError as err:
+            raise _ReadTimeout(size, bytes(data)) from err
+
+        if not chunk:
+            raise asyncio.IncompleteReadError(bytes(data), size)
+
+        data.extend(chunk)
+
+    return bytes(data)
+
+
 class PanelClientAmt8000:
     """Mantém uma conexão TCP persistente e autenticada com a central AMT 8000."""
 
@@ -89,6 +132,12 @@ class PanelClientAmt8000:
     async def disconnect(self) -> None:
         async with self._lock:
             await self._close_locked()
+
+    async def disconnect_in_transaction(self) -> None:
+        """Fecha a conexão TCP com o lock já adquirido — mesmo mecanismo e
+        mesmo motivo de ``PanelClient.disconnect_in_transaction`` (ver lá).
+        """
+        await self._close_locked()
 
     async def _close_locked(self) -> None:
         self._connected = False
@@ -155,38 +204,68 @@ class PanelClientAmt8000:
         label = f" [{context}]" if context else ""
         assert self._writer is not None
         assert self._reader is not None
+        loop = asyncio.get_running_loop()
+        exchange_started = loop.time()
+        deadline = exchange_started + self._timeout
         try:
             _LOGGER.debug("AMT 8000: enviando%s: frame=%s", label, frame.hex(" ").upper())
             if on_sent is not None:
                 on_sent()
             self._writer.write(frame)
-            await self._writer.drain()
+            try:
+                await asyncio.wait_for(
+                    self._writer.drain(),
+                    timeout=max(0.0, deadline - loop.time()),
+                )
+            except asyncio.TimeoutError as err:
+                elapsed = loop.time() - exchange_started
+                await self._close_locked()
+                raise PanelConnectionErrorAmt8000(
+                    f"Falha de comunicação com a AMT 8000{label}: tempo limite total "
+                    f"da troca excedido ({self._timeout}s) durante o envio/drain "
+                    f"({elapsed:.3f}s)"
+                ) from err
 
             # Cabeçalho fixo de 6 bytes (ver protocol_amt8000.parse_frame);
             # o 6º byte (índice 5) é o LEN, a partir do qual sabemos
             # exatamente quanto falta ler (opcode + conteúdo + checksum).
+            response_wait_started = loop.time()
             try:
-                header = await asyncio.wait_for(
-                    self._reader.readexactly(6), timeout=self._timeout
+                header = await _read_exactly_with_timeout(
+                    self._reader, 6, max(0.0, deadline - loop.time())
                 )
-            except asyncio.TimeoutError as err:
+            except _ReadTimeout as err:
+                elapsed = loop.time() - response_wait_started
                 await self._close_locked()
                 raise PanelConnectionErrorAmt8000(
-                    f"Falha de comunicação com a AMT 8000{label}: tempo limite "
-                    f"excedido ({self._timeout}s) — nenhum byte de resposta chegou"
+                    f"Falha de comunicação com a AMT 8000{label}: tempo limite total "
+                    f"da resposta excedido ({self._timeout}s) — cabeçalho incompleto: "
+                    f"recebidos {len(err.partial)}/{err.expected} bytes em "
+                    f"{elapsed:.3f}s"
                 ) from err
 
             length = header[5]
+            expected_remainder = length + 1
+            header_elapsed = loop.time() - response_wait_started
+            remainder_wait_started = loop.time()
             try:
-                remainder = await asyncio.wait_for(
-                    self._reader.readexactly(length + 1), timeout=self._timeout
+                remainder = await _read_exactly_with_timeout(
+                    self._reader,
+                    expected_remainder,
+                    max(0.0, deadline - loop.time()),
                 )
-            except asyncio.TimeoutError as err:
+            except _ReadTimeout as err:
+                remainder_elapsed = loop.time() - remainder_wait_started
+                partial_hex = err.partial.hex(" ").upper() if err.partial else "<nenhum>"
                 await self._close_locked()
                 raise PanelConnectionErrorAmt8000(
-                    f"Falha de comunicação com a AMT 8000{label}: tempo limite "
-                    f"excedido ({self._timeout}s) — central prometeu {length + 1} "
-                    f"bytes após o cabeçalho, mas não terminou de enviar a tempo"
+                    f"Falha de comunicação com a AMT 8000{label}: tempo limite total "
+                    f"da resposta excedido ({self._timeout}s) — central prometeu "
+                    f"{expected_remainder} bytes após o cabeçalho; recebidos "
+                    f"{len(err.partial)}/{expected_remainder} bytes "
+                    f"({6 + len(err.partial)}/{6 + expected_remainder} do frame). "
+                    f"Cabeçalho chegou em {header_elapsed:.3f}s; restante aguardado "
+                    f"por {remainder_elapsed:.3f}s. Parcial={partial_hex}"
                 ) from err
             raw = header + remainder
         except asyncio.IncompleteReadError as err:
@@ -200,6 +279,7 @@ class PanelClientAmt8000:
             await self._close_locked()
             detail = str(err) or err.__class__.__name__
             raise PanelConnectionErrorAmt8000(
+
                 f"Falha de comunicação com a AMT 8000{label}: {detail}"
             ) from err
 
