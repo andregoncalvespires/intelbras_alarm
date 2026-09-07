@@ -10,6 +10,45 @@ registrada aqui antes de cada release.
 
 ## [2.1.1-beta]
 
+### Adicionado — opção para desativar a consulta de tensão independente da senha do app remoto
+
+Pedido do usuário, motivado por uma lacuna real na correção anterior
+desta mesma versão ("senha removida não desativava mais a consulta de
+tensão" — ver abaixo): para modelos/firmwares antigos, a senha do app
+remoto (`CONF_LEGACY_EEPROM_PASSWORD`) é **obrigatória** só para obter
+nomes de zona/eventos (`supports_legacy_eeprom`) — removê-la para
+desligar a tensão quebraria essa outra funcionalidade também. Só
+modelos modernos (que já leem nomes/eventos via `0x5C`, sem precisar
+dessa senha) conseguiam desligar a tensão simplesmente removendo a
+senha.
+
+Nova opção `CONF_VOLTAGE_READING_ENABLED` (`voltage_reading_enabled`),
+independente da senha, exibida logo abaixo dela nas duas telas (config
+inicial e reconfiguração). `supports_voltage_reading` passa a exigir
+três condições em vez de duas: senha preenchida **e** família com
+offset confirmado **e** esta opção marcada. Lida ao vivo de
+`entry.data` a cada consulta (mesmo padrão da correção da senha, sem
+cache travado na criação).
+
+**Sem breaking change**: padrão `True` (marcado) — quem já tinha a
+senha preenchida antes desta opção existir continua recebendo tensão
+automaticamente, sem precisar entrar nas opções e marcar nada. Modelos
+antigos que querem manter nomes/eventos mas desligar só a tensão agora
+podem desmarcar esta opção nova, mantendo a senha preenchida. Avaliado
+e descartado deliberadamente um desenho com padrão desmarcado
+(breaking change de verdade, exigindo ação de todo mundo que já usa a
+funcionalidade) — o usuário concordou com a versão sem quebra depois
+de eu explicar o trade-off.
+
+Testado com a property `supports_voltage_reading` real, extraída do
+arquivo publicado via AST, em 4 cenários: senha preenchida + opção
+ausente do `entry.data` (upgrade de instalação antiga → `True`,
+confirma a ausência de breaking change), senha preenchida + opção
+desmarcada (→ `False`), senha vazia + opção marcada (→ `False`, senha
+continua sendo pré-requisito), e família sem offset confirmado (→
+`False`, inalterado). Traduções atualizadas nos quatro arquivos
+(`strings.json`, `pt-BR.json`, `pt.json`, `en.json`).
+
 ### Corrigido — dessincronização de stream TCP após sessão 0xE7 (causa real de timeouts na consulta de status)
 
 Diagnóstico do próprio usuário, com log preciso: a consulta de status

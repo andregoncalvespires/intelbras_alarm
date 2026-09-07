@@ -20,6 +20,7 @@ from .const import (
     CONF_PASSWORD,
     CONF_RECEPTOR_IP_ENABLED,
     CONF_RECEPTOR_IP_PORT,
+    CONF_VOLTAGE_READING_ENABLED,
     DEFAULT_CODE_REQUIRED_ARM,
     DEFAULT_CODE_REQUIRED_DISARM,
     DEFAULT_ENABLED_ZONES_SPEC,
@@ -60,6 +61,7 @@ STEP_USER_SCHEMA = vol.Schema(
         vol.Optional(CONF_RECEPTOR_IP_ENABLED, default=DEFAULT_RECEPTOR_IP_ENABLED): bool,
         vol.Optional(CONF_RECEPTOR_IP_PORT, default=DEFAULT_RECEPTOR_IP_PORT): vol.Coerce(int),
         vol.Optional(CONF_LEGACY_EEPROM_PASSWORD, default=""): str,
+        vol.Optional(CONF_VOLTAGE_READING_ENABLED, default=True): bool,
     }
 )
 
@@ -165,6 +167,7 @@ class IntelbrasAlarmConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
                     CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
                     CONF_LEGACY_EEPROM_PASSWORD: user_input[CONF_LEGACY_EEPROM_PASSWORD],
+                    CONF_VOLTAGE_READING_ENABLED: user_input[CONF_VOLTAGE_READING_ENABLED],
                 }
                 if detected["family"] == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -293,6 +296,7 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_RECEPTOR_IP_ENABLED: user_input[CONF_RECEPTOR_IP_ENABLED],
                     CONF_RECEPTOR_IP_PORT: user_input[CONF_RECEPTOR_IP_PORT],
                     CONF_LEGACY_EEPROM_PASSWORD: user_input[CONF_LEGACY_EEPROM_PASSWORD],
+                    CONF_VOLTAGE_READING_ENABLED: user_input[CONF_VOLTAGE_READING_ENABLED],
                 }
                 if self.config_entry.data.get("family") == FAMILY_4010:
                     return await self.async_step_partition_passwords()
@@ -344,6 +348,10 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
                     CONF_LEGACY_EEPROM_PASSWORD,
                     default=data.get(CONF_LEGACY_EEPROM_PASSWORD, ""),
                 ): str,
+                vol.Optional(
+                    CONF_VOLTAGE_READING_ENABLED,
+                    default=data.get(CONF_VOLTAGE_READING_ENABLED, True),
+                ): bool,
             }
         )
         return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
@@ -393,6 +401,7 @@ class IntelbrasAlarmOptionsFlow(config_entries.OptionsFlow):
         new_data[CONF_RECEPTOR_IP_ENABLED] = self._pending_data[CONF_RECEPTOR_IP_ENABLED]
         new_data[CONF_RECEPTOR_IP_PORT] = self._pending_data[CONF_RECEPTOR_IP_PORT]
         new_data[CONF_LEGACY_EEPROM_PASSWORD] = self._pending_data[CONF_LEGACY_EEPROM_PASSWORD]
+        new_data[CONF_VOLTAGE_READING_ENABLED] = self._pending_data[CONF_VOLTAGE_READING_ENABLED]
         if CONF_PARTITION_PASSWORDS in self._pending_data:
             new_data[CONF_PARTITION_PASSWORDS] = self._pending_data[CONF_PARTITION_PASSWORDS]
         self.hass.config_entries.async_update_entry(self.config_entry, data=new_data)

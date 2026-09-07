@@ -27,6 +27,7 @@ from .const import (
     CMD_EEPROM_READ,
     CONF_ENABLED_ZONES,
     CONF_LEGACY_EEPROM_PASSWORD,
+    CONF_VOLTAGE_READING_ENABLED,
     DEFAULT_CONNECTION_HEALTH_TIMEOUT,
     DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_POLLING_INTERVAL,
@@ -624,13 +625,29 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         confirmado funcionando mesmo em modelos que usam ``0x5C`` para
         nomes/eventos — testado pelo usuário numa AMT 4010 SMART
         (firmware 5.2, onde ``supports_extended_eeprom`` já é ``True``,
-        e portanto ``supports_legacy_eeprom`` seria ``False``). A única
-        condição real é ter a senha de 6 dígitos configurada **e** a
-        família ter um offset confirmado (``const.VOLTAGE_OFFSETS`` —
-        hoje só família 2018 e 4010; não se aplica à ANM 24 Net nem à
-        AMT 8000, que usam protocolos totalmente diferentes).
+        e portanto ``supports_legacy_eeprom`` seria ``False``).
+
+        Três condições: (1) senha de 6 dígitos configurada, (2) família
+        com offset confirmado (``const.VOLTAGE_OFFSETS`` — hoje só
+        família 2018 e 4010; não se aplica à ANM 24 Net nem à AMT 8000,
+        que usam protocolos totalmente diferentes), e (3) a opção
+        ``CONF_VOLTAGE_READING_ENABLED`` (bug real corrigido, pedido do
+        usuário: em modelos/firmwares antigos, a mesma senha acima é
+        obrigatória só para nomes de zona/eventos —
+        ``supports_legacy_eeprom`` — então antes desta opção existir,
+        esses usuários não tinham como desligar só a consulta de tensão
+        sem perder a outra funcionalidade também. Lida ao vivo de
+        ``entry.data`` a cada consulta, mesmo padrão/motivo de
+        ``_legacy_eeprom_password`` acima — sem cache travado na
+        criação. Padrão ``True`` deliberado: preserva o comportamento
+        de quem já tinha a senha preenchida antes desta opção existir,
+        sem exigir nenhuma ação para manter a tensão funcionando).
         """
-        return self._legacy_eeprom_password is not None and self.family in VOLTAGE_OFFSETS
+        return (
+            self._legacy_eeprom_password is not None
+            and self.family in VOLTAGE_OFFSETS
+            and self.entry.data.get(CONF_VOLTAGE_READING_ENABLED, True)
+        )
 
     def zone_enabled_by_default(self, zone: int) -> bool:
         """Se a zona deve nascer habilitada no registro de entidades.

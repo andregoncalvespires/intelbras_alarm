@@ -95,6 +95,14 @@ CONF_LEGACY_EEPROM_PASSWORD = "legacy_eeprom_password"  # opcional, 6
 # protocolo legado (0xE7) nos modelos/firmwares que não alcançam o
 # limiar do comando moderno 0x5C (ver supports_extended_eeprom). Em
 # branco por padrão -- só é usado se o usuário preencher explicitamente.
+CONF_VOLTAGE_READING_ENABLED = "voltage_reading_enabled"  # bool, padrão
+# True -- separado da senha acima de propósito (bug real corrigido,
+# relatado pelo usuário): em modelos/firmwares antigos, a MESMA senha é
+# obrigatória só para nomes de zona/eventos (supports_legacy_eeprom),
+# então removê-la para desligar a consulta de tensão quebraria essa
+# outra funcionalidade também. Este campo permite desligar só a tensão,
+# mantendo a senha preenchida. Sem efeito se a senha estiver em branco
+# -- ver coordinator.supports_voltage_reading.
 
 OPT_POLLING_INTERVAL = "polling_interval"
 

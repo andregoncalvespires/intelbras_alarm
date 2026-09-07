@@ -14,7 +14,8 @@
           "enabled_zones": "Zones enabled by default",
           "receptor_ip_enabled": "Enable event receiving (Receptor IP)",
           "receptor_ip_port": "Receptor IP listening port",
-          "legacy_eeprom_password": "AMT Remoto app access password (6 digits, optional)"
+          "legacy_eeprom_password": "AMT Remoto app access password (6 digits, optional)",
+          "voltage_reading_enabled": "Read source/battery voltage"
         },
         "data_description": {
           "amt8000_mode": "Only check this if your panel is an AMT 8000 — it uses a separate protocol still under development and testing (see README_DETALHADO.md, \"AMT 8000 (experimental)\" section). Leave unchecked for the other models (2018/1016/4010), which keep automatic detection.",
@@ -23,7 +24,8 @@
           "enabled_zones": "Format: ranges and/or numbers separated by ; (e.g. 1-5;8;10-15). Zones outside this list still exist, just disabled until you enable them manually under Settings → Entities.",
           "receptor_ip_enabled": "Unchecked (default): off, no port is opened. Checked: the panel can connect here and push events in real time — you'll need to configure the panel separately (outside this screen) to point at Home Assistant's IP and the port below. See the README for the full walkthrough.",
           "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect (not to be confused with the panel's own port, above) — must match what's configured on the panel. Only matters if the option above is checked.",
-          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware), or to read the source/battery voltage. It's the same 6-digit password (\"Senha Acesso Remoto\"). If you fill this in, we recommend disabling event 1410 (\"Remote access for reading events or settings\") in the AMT Remoto app — this integration authenticates with this password periodically (every 5 minutes, for voltage), and each time generates that event on the panel."
+          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware), or to read the source/battery voltage. It's the same 6-digit password (\"Senha Acesso Remoto\"). If you fill this in, we recommend disabling event 1410 (\"Remote access for reading events or settings\") in the AMT Remoto app — this integration authenticates with this password periodically (every 5 minutes, for voltage), and each time generates that event on the panel.",
+          "voltage_reading_enabled": "Checked (default): every 5 minutes, authenticates with the password above and reads the source and battery voltage. Unchecked: never queries voltage, even with the password filled in — use this if your model/firmware needs that password only for zone names and events (not in the README's \"zone names and event log\" list) and you don't want the extra periodic voltage queries. Has no effect if the password above is blank."
         }
       },
       "partition_passwords": {
@@ -60,7 +62,8 @@
           "polling_interval": "Status polling interval (seconds)",
           "receptor_ip_enabled": "Enable event receiving (Receptor IP)",
           "receptor_ip_port": "Receptor IP listening port",
-          "legacy_eeprom_password": "AMT Remoto app access password (6 digits, optional)"
+          "legacy_eeprom_password": "AMT Remoto app access password (6 digits, optional)",
+          "voltage_reading_enabled": "Read source/battery voltage"
         },
         "data_description": {
           "password": "The new password is validated against the panel itself before being saved.",
@@ -68,7 +71,8 @@
           "code_required_disarm": "Unchecked: disarms with a single tap, no typing. Checked: asks for the password before disarming.",
           "receptor_ip_enabled": "Unchecked (default): off, no port is opened. Checked: the panel can connect here and push events in real time — you'll need to configure the panel separately (outside this screen) to point at Home Assistant's IP and the port below. See the README for the full walkthrough.",
           "receptor_ip_port": "Port where Home Assistant will wait for the panel to connect — must match what's configured on the panel. Only matters if the option above is checked.",
-          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware), or to read the source/battery voltage. It's the same 6-digit password (\"Senha Acesso Remoto\"). If you fill this in, we recommend disabling event 1410 (\"Remote access for reading events or settings\") in the AMT Remoto app — this integration authenticates with this password periodically (every 5 minutes, for voltage), and each time generates that event on the panel."
+          "legacy_eeprom_password": "Leave blank (default) to not use. Only needed if your model/firmware does NOT appear in the README's \"zone names and event log\" list (e.g. AMT 1016 NET with older firmware), or to read the source/battery voltage. It's the same 6-digit password (\"Senha Acesso Remoto\"). If you fill this in, we recommend disabling event 1410 (\"Remote access for reading events or settings\") in the AMT Remoto app — this integration authenticates with this password periodically (every 5 minutes, for voltage), and each time generates that event on the panel.",
+          "voltage_reading_enabled": "Checked (default): every 5 minutes, authenticates with the password above and reads the source and battery voltage. Unchecked: never queries voltage, even with the password filled in — use this if your model/firmware needs that password only for zone names and events (not in the README's \"zone names and event log\" list) and you don't want the extra periodic voltage queries. Has no effect if the password above is blank."
         }
       },
       "partition_passwords": {

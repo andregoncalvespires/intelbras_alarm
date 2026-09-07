@@ -14,7 +14,8 @@
           "enabled_zones": "Zonas habilitadas por padrão",
           "receptor_ip_enabled": "Habilitar recepção de eventos (Receptor IP)",
           "receptor_ip_port": "Porta de escuta do Receptor IP",
-          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)"
+          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)",
+          "voltage_reading_enabled": "Consultar tensão da fonte/bateria"
         },
         "data_description": {
           "amt8000_mode": "Marque somente se sua central for uma AMT 8000 — usa um protocolo próprio ainda em desenvolvimento e teste (ver README_DETALHADO.md, seção \"AMT 8000 (experimental)\"). Deixe desmarcado para os demais modelos (2018/1016/4010), que continuam com detecção automática.",
@@ -23,7 +24,8 @@
           "enabled_zones": "Formato: intervalos e/ou números separados por ; (ex.: 1-5;8;10-15). As zonas fora dessa lista continuam existindo, só ficam desabilitadas até você ativá-las manualmente em Configurações → Entidades.",
           "receptor_ip_enabled": "Desmarcado (padrão): desligado, nenhuma porta é aberta. Marcado: a central pode se conectar aqui e empurrar eventos em tempo real — precisa configurar a central separadamente (fora desta tela) apontando para o IP do Home Assistant e a porta abaixo. Veja o README para o passo a passo completo.",
           "receptor_ip_port": "Porta em que o Home Assistant vai ficar esperando a central se conectar (não confundir com a porta da central, acima) — precisa ser a mesma configurada na central. Só importa se a opção acima estiver marcada.",
-          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\"). Se preencher, recomendamos desativar o envio do evento 1410 (\"Acesso remoto para leitura de eventos ou configurações\") no app AMT Remoto — esta integração autentica com essa senha periodicamente (a cada 5 minutos, para a tensão), e cada vez gera esse evento na central."
+          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\"). Se preencher, recomendamos desativar o envio do evento 1410 (\"Acesso remoto para leitura de eventos ou configurações\") no app AMT Remoto — esta integração autentica com essa senha periodicamente (a cada 5 minutos, para a tensão), e cada vez gera esse evento na central.",
+          "voltage_reading_enabled": "Marcado (padrão): a cada 5 minutos, autentica com a senha acima e lê a tensão da fonte e da bateria. Desmarcado: nunca consulta tensão, mesmo com a senha preenchida — use isto se seu modelo/firmware precisa dessa senha só para nomes de zona e eventos (não aparece na lista de \"nomes de zona e log de eventos\" do README) e você não quer as consultas periódicas extras de tensão. Sem efeito se a senha acima estiver em branco."
         }
       },
       "partition_passwords": {
@@ -60,7 +62,8 @@
           "polling_interval": "Intervalo de consulta de status (segundos)",
           "receptor_ip_enabled": "Habilitar recepção de eventos (Receptor IP)",
           "receptor_ip_port": "Porta de escuta do Receptor IP",
-          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)"
+          "legacy_eeprom_password": "Senha acesso App AMT Remoto (6 dígitos, opcional)",
+          "voltage_reading_enabled": "Consultar tensão da fonte/bateria"
         },
         "data_description": {
           "password": "A nova senha é validada contra a própria central antes de ser salva.",
@@ -68,7 +71,8 @@
           "code_required_disarm": "Desmarcado: desativa com um toque, sem digitar nada. Marcado: pede a senha antes de desativar.",
           "receptor_ip_enabled": "Desmarcado (padrão): desligado, nenhuma porta é aberta. Marcado: a central pode se conectar aqui e empurrar eventos em tempo real — precisa configurar a central separadamente (fora desta tela) apontando para o IP do Home Assistant e a porta abaixo. Veja o README para o passo a passo completo.",
           "receptor_ip_port": "Porta em que o Home Assistant vai ficar esperando a central se conectar — precisa ser a mesma configurada na central. Só importa se a opção acima estiver marcada.",
-          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\"). Se preencher, recomendamos desativar o envio do evento 1410 (\"Acesso remoto para leitura de eventos ou configurações\") no app AMT Remoto — esta integração autentica com essa senha periodicamente (a cada 5 minutos, para a tensão), e cada vez gera esse evento na central."
+          "legacy_eeprom_password": "Deixe em branco (padrão) para não usar. Só é necessária se o seu modelo/firmware NÃO aparecer na lista de \"nomes de zona e log de eventos\" do README (ex.: AMT 1016 NET com firmware antigo), ou para realizar a leitura de informação tensão de bateria e fonte. É a mesma senha de 6 dígitos (\"Senha Acesso Remoto\"). Se preencher, recomendamos desativar o envio do evento 1410 (\"Acesso remoto para leitura de eventos ou configurações\") no app AMT Remoto — esta integração autentica com essa senha periodicamente (a cada 5 minutos, para a tensão), e cada vez gera esse evento na central.",
+          "voltage_reading_enabled": "Marcado (padrão): a cada 5 minutos, autentica com a senha acima e lê a tensão da fonte e da bateria. Desmarcado: nunca consulta tensão, mesmo com a senha preenchida — use isto se seu modelo/firmware precisa dessa senha só para nomes de zona e eventos (não aparece na lista de \"nomes de zona e log de eventos\" do README) e você não quer as consultas periódicas extras de tensão. Sem efeito se a senha acima estiver em branco."
         }
       },
       "partition_passwords": {

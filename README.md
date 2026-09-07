@@ -137,6 +137,12 @@ adicione a URL deste repositório (categoria Integração) → instale
    > AMT Remoto — esta integração autentica com essa senha
    > periodicamente (a cada 5 minutos, para a tensão), e cada vez gera
    > esse evento na central, podendo encher o histórico de eventos.
+   >
+   > Logo abaixo desse campo tem outra opção, **"Consultar tensão da
+   > fonte/bateria"** (marcada por padrão) — se sua central estiver fora
+   > da lista abaixo e você preencheu a senha só para conseguir nomes de
+   > zona/eventos, sem querer a consulta periódica de tensão, desmarque
+   > essa opção sem precisar apagar a senha.
 8. Nos demais modelos (checkbox da AMT 8000 desmarcado), o **modelo é
    detectado automaticamente** — sem campo manual.
 9. Só para a **AMT 4010 SMART**: uma tela extra permite cadastrar senhas
@@ -208,9 +214,10 @@ não são editáveis ali (esse último só funciona na configuração inicial)
   estiver habilitado, **"Último evento (Receptor IP)"** e **"Último sinal
   de vida (Receptor IP)"** (ver seção própria). **"Tensão da fonte"** e
   **"Tensão da bateria"** (só com a senha de leitura de 6 dígitos
-  configurada — ver seção "Nomes de zona e log de eventos" mais abaixo —
-  atualizadas a cada 5 minutos, num agendamento próprio e mais espaçado
-  que o polling de status normal).
+  configurada **e** a opção "Consultar tensão da fonte/bateria" marcada
+  — ver seção "Nomes de zona e log de eventos" mais abaixo — atualizadas
+  a cada 5 minutos, num agendamento próprio e mais espaçado que o
+  polling de status normal).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —
@@ -254,6 +261,12 @@ Remoto" pedida pelo app AMT Mobile) na configuração da integração
 (deixe em branco se não quiser usar). Não se aplica à AMT 8000. Sem
 essa senha preenchida, o botão de sincronizar nomes de zona e o
 serviço de eventos continuam sem fazer nada, como antes.
+
+Nesse caso a senha é obrigatória só para nomes de zona/eventos — ela
+**não** obriga a consulta de tensão junto. Se você não quer as
+consultas periódicas de tensão (a cada 5 minutos), desmarque a opção
+"Consultar tensão da fonte/bateria", logo abaixo do campo da senha,
+mantendo a senha preenchida normalmente.
 
 ## Serviço `intelbras_alarm.bypass_zone`
 
