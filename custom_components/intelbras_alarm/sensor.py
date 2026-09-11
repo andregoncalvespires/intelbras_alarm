@@ -61,6 +61,7 @@ async def async_setup_entry(
         IntelbrasRecentEventsSensor(coordinator, entry),
         IntelbrasReceptorLastEventSensor(coordinator, entry),
         IntelbrasReceptorHeartbeatSensor(coordinator, entry),
+        IntelbrasReceptorNetworkRestartSensor(coordinator, entry),
     ]
     # Só a AMT 2018 E SMART manda esses dados (resposta 0x5D) — ver
     # protocol.parse_status_2018_esmart_extra e
@@ -352,7 +353,10 @@ class IntelbrasRecentEventsSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], 
 
     @property
     def available(self) -> bool:
-        return self.coordinator.supports_extended_eeprom or self.coordinator.supports_legacy_eeprom
+        return self.coordinator.last_update_success and (
+            self.coordinator.supports_extended_eeprom
+            or self.coordinator.supports_legacy_eeprom
+        )
 
     @property
     def native_value(self) -> str | None:
@@ -482,6 +486,53 @@ class IntelbrasReceptorHeartbeatSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
     @property
     def native_value(self):
         return self.coordinator.receptor_last_heartbeat
+
+
+class IntelbrasReceptorNetworkRestartSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):
+    """Última reinicialização de rede detectada pela correlação de dois FINs.
+
+    EXPERIMENTAL: um FIN remoto isolado na conexão de comandos/status
+    (9009) ou no Receptor IP (9010/configurada) é apenas candidato. O
+    estado deste sensor só muda quando os dois são detectados com diferença
+    de no máximo 1,0 segundo — padrão observado no PCAP real da AMT 4010
+    no início da reinicialização diária do subsistema de rede.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Reinicialização de rede detectada"
+    _attr_icon = "mdi:lan-disconnect"
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: IntelbrasAlarmCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        # Mantém o unique_id da versão experimental anterior para atualizar
+        # a mesma entidade no registro do HA, sem criar uma duplicata.
+        self._attr_unique_id = f"{entry.entry_id}_receptor_network_restart_suspected"
+        self._attr_device_info = _device_info(entry)
+        self._enabled = entry.data.get(CONF_RECEPTOR_IP_ENABLED, DEFAULT_RECEPTOR_IP_ENABLED)
+
+    @property
+    def available(self) -> bool:
+        # A confirmação depende da porta Receptor IP estar habilitada.
+        return self._enabled
+
+    @property
+    def native_value(self):
+        return self.coordinator.receptor_last_network_restart_suspected
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        fin_9009 = self.coordinator.network_restart_fin_9009_candidate
+        fin_9010 = self.coordinator.network_restart_fin_9010_candidate
+        return {
+            "experimental": True,
+            "criterio": "FIN remoto 9009 + FIN remoto 9010 em <= 1.0 s",
+            "fin_9009_candidato": fin_9009.isoformat() if fin_9009 else None,
+            "fin_9010_candidato": fin_9010.isoformat() if fin_9010 else None,
+            "diferenca_fins_s": self.coordinator.network_restart_last_fin_delta_s,
+            "janela_correlacao_s": self.coordinator._NETWORK_RESTART_FIN_WINDOW_S,
+        }
 
 
 class IntelbrasESmartNetworkSensor(CoordinatorEntity[IntelbrasAlarmCoordinator], SensorEntity):

@@ -211,13 +211,16 @@ não são editáveis ali (esse último só funciona na configuração inicial)
   a última ação enviada e a resposta da central, separado da consulta de
   status normal), **"Últimos eventos"** (só nos modelos/firmwares da
   tabela abaixo — ver seção própria mais adiante), e, se o Receptor IP
-  estiver habilitado, **"Último evento (Receptor IP)"** e **"Último sinal
-  de vida (Receptor IP)"** (ver seção própria). **"Tensão da fonte"** e
-  **"Tensão da bateria"** (só com a senha de leitura de 6 dígitos
-  configurada **e** a opção "Consultar tensão da fonte/bateria" marcada
-  — ver seção "Nomes de zona e log de eventos" mais abaixo — atualizadas
-  a cada 5 minutos, num agendamento próprio e mais espaçado que o
-  polling de status normal).
+  estiver habilitado, **"Último evento (Receptor IP)"**, **"Último sinal
+  de vida (Receptor IP)"** (ver seção própria) e **"Reinicialização de
+  rede detectada"** (diagnóstico experimental — sinaliza quando a
+  própria central reinicia seu subsistema de rede, correlacionando o
+  fechamento das duas conexões TCP; não indica problema na integração).
+  **"Tensão da fonte"** e **"Tensão da bateria"** (só com a senha de
+  leitura de 6 dígitos configurada **e** a opção "Consultar tensão da
+  fonte/bateria" marcada — ver seção "Nomes de zona e log de eventos"
+  mais abaixo — atualizadas a cada 5 minutos, num agendamento próprio e
+  mais espaçado que o polling de status normal).
 - **PGMs e sirene** (`switch`): controla e mostra o estado real de cada
   PGM e da sirene.
 - **Conexão com a central** (`switch`): liga/desliga a comunicação TCP —

@@ -96,6 +96,7 @@ class PanelClient:
         port: int,
         timeout: float = DEFAULT_REQUEST_TIMEOUT,
         enabled: bool = True,
+        on_remote_graceful_disconnect: Callable[[], None] | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -105,6 +106,12 @@ class PanelClient:
         self._lock = asyncio.Lock()
         self._connected = False
         self._enabled = enabled  # controlado pelo switch de conexão
+        # EXPERIMENTAL: callback disparado somente quando o StreamReader
+        # observa EOF limpo vindo do peer (compatível com FIN remoto da
+        # central). Fechamentos iniciados por nós passam por _close_locked()
+        # e NÃO chamam este callback.
+        self._on_remote_graceful_disconnect = on_remote_graceful_disconnect
+        self._remote_fin_notified_for_connection = False
 
     @property
     def connected(self) -> bool:
@@ -113,6 +120,34 @@ class PanelClient:
     @property
     def enabled(self) -> bool:
         return self._enabled
+
+    def set_on_remote_graceful_disconnect(
+        self, callback: Callable[[], None] | None
+    ) -> None:
+        """Define callback experimental para EOF/FIN remoto na porta 9009.
+
+        O callback não é chamado quando a própria integração executa
+        ``disconnect()``/``_close_locked()`` (ex.: switch desligado, unload
+        ou encerramento deliberado de uma sessão E7). Ele só é acionado
+        quando o leitor TCP constata que o peer encerrou graciosamente a
+        conexão.
+        """
+        self._on_remote_graceful_disconnect = callback
+
+    def _notify_remote_graceful_disconnect(self) -> None:
+        """Notifica uma única vez por conexão que a central enviou EOF/FIN."""
+        if self._remote_fin_notified_for_connection:
+            return
+        self._remote_fin_notified_for_connection = True
+        callback = self._on_remote_graceful_disconnect
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:  # noqa: BLE001 - diagnóstico nunca pode quebrar I/O
+            _LOGGER.exception(
+                "Falha no callback experimental de FIN remoto da porta 9009"
+            )
 
     async def set_enabled(self, enabled: bool) -> None:
         """Liga/desliga a comunicação com a central (switch de manutenção)."""
@@ -132,6 +167,7 @@ class PanelClient:
                     timeout=self._timeout,
                 )
                 self._connected = True
+                self._remote_fin_notified_for_connection = False
                 _LOGGER.debug("Conectado à central em %s:%s", self._host, self._port)
             except (OSError, asyncio.TimeoutError) as err:
                 self._connected = False
@@ -237,6 +273,8 @@ class PanelClient:
         frame: bytes,
         context: str | None = None,
         on_sent: Callable[[], None] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> ParsedFrame:
         """Envia um frame já pronto e aguarda a resposta correspondente.
 
@@ -247,6 +285,11 @@ class PanelClient:
         A", "consulta de status") usado para enriquecer as mensagens de
         erro e os logs — não afeta o comportamento do envio em si.
 
+        ``timeout`` permite reduzir o deadline de uma requisição específica
+        sem alterar ``self._timeout``. Importante: ele vale somente para a
+        troca já com o socket pronto; uma eventual abertura/reabertura TCP
+        continua usando ``self._timeout`` em ``_connect_locked()``.
+
         Para sequências de múltiplos comandos que precisam ser tratadas
         como uma transação atômica (não podem ser interrompidas por
         outro comando no meio), ver ``transaction()`` e
@@ -255,10 +298,16 @@ class PanelClient:
         if not self._enabled:
             raise PanelConnectionError("Comunicação com a central está desativada")
         async with self._lock:
-            return await self._send_command_locked(frame, context, on_sent=on_sent)
+            return await self._send_command_locked(
+                frame, context, on_sent=on_sent, timeout=timeout
+            )
 
     async def send_command_in_transaction(
-        self, frame: bytes, context: str | None = None
+        self,
+        frame: bytes,
+        context: str | None = None,
+        *,
+        timeout: float | None = None,
     ) -> ParsedFrame:
         """Igual a ``send_command()``, mas **não adquire o lock sozinho**
         — só deve ser chamado de dentro de um bloco
@@ -270,13 +319,15 @@ class PanelClient:
         """
         if not self._enabled:
             raise PanelConnectionError("Comunicação com a central está desativada")
-        return await self._send_command_locked(frame, context)
+        return await self._send_command_locked(frame, context, timeout=timeout)
 
     async def _send_command_locked(
         self,
         frame: bytes,
         context: str | None = None,
         on_sent: Callable[[], None] | None = None,
+        *,
+        timeout: float | None = None,
     ) -> ParsedFrame:
         """Lógica real de envio — assume que o lock já está adquirido
         por quem chamou (``send_command()`` ou
@@ -288,9 +339,23 @@ class PanelClient:
 
         assert self._writer is not None
         assert self._reader is not None
+
+        # Se o FIN remoto chegou enquanto não havia uma requisição em voo,
+        # o StreamReader pode já estar em EOF antes do próximo STATUS.
+        # Detectamos isso ANTES de escrever para não perder o sinal de FIN
+        # nem confundi-lo com BrokenPipe no writer.
+        if self._reader.at_eof():
+            self._notify_remote_graceful_disconnect()
+            await self._close_locked()
+            raise PanelConnectionError(
+                f"Falha de comunicação com a central{label}: conexão encerrada "
+                "graciosamente pela central antes da nova requisição (FIN remoto)"
+            )
+
         loop = asyncio.get_running_loop()
+        request_timeout = self._timeout if timeout is None else timeout
         exchange_started = loop.time()
-        deadline = exchange_started + self._timeout
+        deadline = exchange_started + request_timeout
         try:
             # Log só AQUI (depois de conseguir a vez na fila do lock),
             # de propósito — reflete o momento em que o comando
@@ -315,7 +380,7 @@ class PanelClient:
                 await self._close_locked()
                 raise PanelConnectionError(
                     f"Falha de comunicação com a central{label}: tempo limite total "
-                    f"da troca excedido ({self._timeout}s) durante o envio/drain "
+                    f"da troca excedido ({request_timeout}s) durante o envio/drain "
                     f"({elapsed:.3f}s)"
                 ) from err
 
@@ -338,7 +403,7 @@ class PanelClient:
                 await self._close_locked()
                 raise PanelConnectionError(
                     f"Falha de comunicação com a central{label}: tempo limite total "
-                    f"da resposta excedido ({self._timeout}s) — cabeçalho incompleto: "
+                    f"da resposta excedido ({request_timeout}s) — cabeçalho incompleto: "
                     f"recebidos {len(err.partial)}/{err.expected} bytes em "
                     f"{elapsed:.3f}s"
                 ) from err
@@ -359,7 +424,7 @@ class PanelClient:
                 await self._close_locked()
                 raise PanelConnectionError(
                     f"Falha de comunicação com a central{label}: tempo limite total "
-                    f"da resposta excedido ({self._timeout}s) — central prometeu "
+                    f"da resposta excedido ({request_timeout}s) — central prometeu "
                     f"{expected_remainder} bytes após o cabeçalho; recebidos "
                     f"{len(err.partial)}/{expected_remainder} bytes "
                     f"({1 + len(err.partial)}/{1 + expected_remainder} do frame). "
@@ -368,6 +433,12 @@ class PanelClient:
                 ) from err
             raw = header + remainder
         except asyncio.IncompleteReadError as err:
+            # EOF limpo vindo do peer durante a troca: em TCP/asyncio é o
+            # sinal de aplicação compatível com FIN remoto. Como todo
+            # fechamento voluntário nosso ocorre fora deste caminho e sob
+            # o mesmo lock, este evento pode ser usado como candidato da
+            # porta 9009 na correlação experimental de reboot de rede.
+            self._notify_remote_graceful_disconnect()
             await self._close_locked()
             raise PanelConnectionError(
                 f"Falha de comunicação com a central{label}: conexão encerrada "
@@ -394,6 +465,7 @@ class PanelClient:
                 timeout=self._timeout,
             )
             self._connected = True
+            self._remote_fin_notified_for_connection = False
             _LOGGER.debug("(Re)conectado à central em %s:%s", self._host, self._port)
         except asyncio.TimeoutError as err:
             self._connected = False

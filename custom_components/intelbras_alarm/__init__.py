@@ -127,6 +127,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         partition_passwords=entry.data.get(CONF_PARTITION_PASSWORDS),
     )
 
+    # EXPERIMENTAL: na família que usa PanelClient/ISECMobile, um EOF
+    # limpo observado no socket de comandos/status é compatível com FIN
+    # remoto da central na porta 9009. Fechamentos iniciados por nós não
+    # acionam este callback. O coordinator correlaciona esse candidato com
+    # um FIN remoto do Receptor IP (9010/configurada) numa janela de 1 s.
+    if isinstance(client, PanelClient):
+        client.set_on_remote_graceful_disconnect(
+            coordinator.on_panel_graceful_disconnect
+        )
+
     # Carrega os nomes de zona/usuário já salvos de uma sincronização
     # anterior (se houver) — ANTES de qualquer coisa que dependa de
     # conexão, já que é só leitura de um arquivo local. Bug real
@@ -222,6 +232,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             expected_panel_ip=entry.data["host"],
             on_event=coordinator.on_receptor_event,
             on_heartbeat=coordinator.on_receptor_heartbeat,
+            on_graceful_disconnect=coordinator.on_receptor_graceful_disconnect,
         )
         try:
             await receptor_server.async_start()

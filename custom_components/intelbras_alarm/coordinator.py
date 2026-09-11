@@ -32,6 +32,8 @@ from .const import (
     DEFAULT_ENABLED_ZONES_SPEC,
     DEFAULT_POLLING_INTERVAL,
     DEFAULT_REQUEST_TIMEOUT,
+    STATUS_REQUEST_TIMEOUT,
+    LEGACY_E7_LOGOUT_TIMEOUT,
     EEPROM_EXTENDED_MIN_FIRMWARE,
     EVENT_ENTITY_RECENT_COUNT,
     EVENT_LOG_BASE_ADDRESS,
@@ -153,6 +155,21 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # último sinal de vida recebido do Receptor IP — heartbeat (0xF7)
         # ou qualquer evento, o que chegar primeiro/depois.
         self.receptor_last_heartbeat: datetime | None = None
+        # EXPERIMENTAL — detecção correlacionada de reinicialização de rede.
+        # Um FIN remoto isolado em 9009 ou 9010 é apenas um candidato. Na
+        # captura real da AMT 4010, porém, a central fechou graciosamente as
+        # DUAS conexões praticamente ao mesmo tempo no início do reboot do
+        # subsistema de rede. Só confirmamos o sensor quando ambos os FINs
+        # ocorrerem numa janela <= 1,0 s.
+        self.network_restart_fin_9009_candidate: datetime | None = None
+        self.network_restart_fin_9010_candidate: datetime | None = None
+        self.network_restart_last_fin_delta_s: float | None = None
+        self.receptor_last_network_restart_suspected: datetime | None = None
+        # Fica True somente entre a correlação do FIN remoto 9009+9010 e o
+        # primeiro STATUS válido seguinte. Por enquanto é usado APENAS para
+        # enriquecer os logs; não suprime warnings, não muda disponibilidade
+        # e não altera a janela de saúde de 10s.
+        self.network_restart_in_progress = False
         # Rastreamento local do modo de ativação (stay/away), pois o status
         # da central não informa o modo, apenas se está ativada ou não.
         self.armed_home_mode: dict[str, bool] = {"CENTRAL": False, "A": False, "B": False, "C": False, "D": False}
@@ -192,6 +209,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # _async_update_data(). None só antes da primeira consulta bem-
         # sucedida desde que a integração carregou.
         self._last_poll_success_monotonic: float | None = None
+        # Diagnóstico do experimento E7: permite correlacionar qualquer
+        # timeout de STATUS com o encerramento da última sessão E7 sem
+        # depender do relógio/linhas anteriores do log. Marcado logo após
+        # fechar o TCP da sessão E7. O teste atual libera o lock imediatamente.
+        self._last_e7_finished_monotonic: float | None = None
+        self._last_e7_context: str | None = None
+        self._last_e7_logout_confirmed: bool | None = None
+        self._last_e7_logout_response: str | None = None
         # Evita logar a MESMA falha repetidamente a cada ciclo de polling
         # (0,25s por padrão) enquanto ela persistir — sem isso, deixar a
         # central offline (ou o switch desligado) por muito tempo gera
@@ -201,6 +226,11 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # registra a falha UMA VEZ ao virar definitiva, e a recuperação
         # (quando volta a funcionar) também só uma vez.
         self._poll_failure_logged = False
+        # Número de falhas consecutivas de STATUS desde o último STATUS bom.
+        # A primeira falha tolerável é somente DEBUG; WARNING começa apenas
+        # se houver uma segunda falha consecutiva. Isso evita alertar por um
+        # único soluço num polling rápido.
+        self._consecutive_poll_failures = 0
         # Idem, mas específico para "switch de conexão desligado" — esse
         # caso nem tenta se comunicar com a central (ver
         # _async_update_data), só precisa de um log próprio na transição.
@@ -418,19 +448,31 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         ``coordinator.last_update_success``. Resultado: todas as entidades
         baseadas no coordinator (painel, sensores, PGMs) continuavam
         aparecendo como disponíveis, com dados cada vez mais desatualizados,
-        mesmo com o switch de conexão desligado. ``async_set_update_error()``
-        é a forma pública e correta do próprio ``DataUpdateCoordinator``
-        para marcar isso manualmente e notificar as entidades na hora, sem
-        precisar de um ciclo de refresh de verdade para chegar lá.
+        mesmo com o switch de conexão desligado. Como o desligamento é
+        deliberado (não uma falha de comunicação), a disponibilidade é
+        marcada explicitamente por ``mark_connection_disabled()`` e os
+        listeners são notificados na hora, sem gerar um falso erro de update.
         """
         self._polling_enabled = False
         self._polling_wakeup.set()
         # Não deixa um comando já concluído ficar preso esperando um refresh
         # impossível depois que o usuário desligou a conexão.
         self._complete_status_refresh_waiters()
-        self.async_set_update_error(
-            PanelConnectionError("Comunicação com a central está desativada")
-        )
+        self.mark_connection_disabled()
+
+    def mark_connection_disabled(self) -> None:
+        """Marca as entidades dependentes da conexão como indisponíveis.
+
+        Desligar o switch é uma ação deliberada, não uma falha de
+        comunicação. Por isso não usamos ``async_set_update_error()``, que
+        representa um erro real de atualização. Também zeramos a referência
+        do último poll bem-sucedido para que, ao religar, uma falha inicial
+        não seja tolerada com base numa comunicação anterior ao desligamento.
+        """
+        self.last_exception = None
+        self.last_update_success = False
+        self._last_poll_success_monotonic = None
+        self.async_update_listeners()
 
     def resume_polling(self) -> None:
         """Inicia/retoma o scheduler usando o intervalo configurado.
@@ -819,6 +861,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 _build_status_frame(self._password, self.family, self.model_key),
                 context="consulta de status",
                 on_sent=self._mark_status_sent,
+                timeout=STATUS_REQUEST_TIMEOUT,
             )
             _LOGGER.debug(
                 "Consulta de status: respondida em %.3fs", time.monotonic() - t_inicio_status
@@ -890,6 +933,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # ter levantado UpdateFailed nesse caso (ver lá), mas por
             # segurança levanta aqui também.
             raise UpdateFailed(str(err)) from err
+
+        # Sucesso: encerra a sequência de falhas consecutivas. Se havia uma
+        # reinicialização de rede experimental em andamento, o primeiro
+        # STATUS válido encerra silenciosamente esse modo (por enquanto sem
+        # INFO próprio de recuperação, conforme decidido para este teste).
+        self._consecutive_poll_failures = 0
+        if self.network_restart_in_progress:
+            self.network_restart_in_progress = False
 
         # Sucesso: reseta a marca de tempo de "última consulta boa", usada
         # pela lógica de tolerância acima. Se estava marcado como falho,
@@ -990,6 +1041,9 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 return self.data
             raise UpdateFailed(str(err)) from err
 
+        # Mesma contagem compartilhada usada por _handle_poll_failure(): um
+        # STATUS válido encerra a sequência de falhas também na AMT 8000.
+        self._consecutive_poll_failures = 0
         if self._poll_failure_logged:
             elapsed = (
                 time.monotonic() - self._last_poll_success_monotonic
@@ -1031,11 +1085,11 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
         Tolerância: se o tempo desde a última consulta bem-sucedida ainda
         está dentro de ``DEFAULT_CONNECTION_HEALTH_TIMEOUT`` (10s por
-        padrão), a falha vira só um aviso no log — as entidades continuam
-        "disponíveis", mostrando o último dado bom conhecido, e a próxima
-        tentativa (0,25s depois, por padrão) tenta de novo normalmente.
-        Isso evita marcar tudo como indisponível por causa de um soluço
-        isolado (ex.: o bug do firmware 6.2 documentado no README).
+        padrão), as entidades continuam "disponíveis", mostrando o último
+        dado bom conhecido. A PRIMEIRA falha consecutiva fica somente em
+        DEBUG; WARNING começa apenas na segunda falha consecutiva. Isso evita
+        alertar por um único soluço num polling rápido, sem esconder uma
+        interrupção que realmente persista.
 
         Levanta ``UpdateFailed`` (marcando as entidades como indisponíveis
         de verdade) quando: nunca houve nenhuma consulta bem-sucedida
@@ -1052,12 +1106,41 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         `recorder` em vários GB — caso real relatado em produção.
         """
         now = time.monotonic()
+        self._consecutive_poll_failures += 1
+        restart_diag = (
+            "; central em modo REINICIALIZAÇÃO DE REDE DETECTADA (experimental)"
+            if self.network_restart_in_progress
+            else ""
+        )
+        if self._last_e7_finished_monotonic is None:
+            e7_diag = "nenhuma sessão E7 encerrada desde o carregamento"
+        else:
+            e7_age = now - self._last_e7_finished_monotonic
+            if self._last_e7_logout_confirmed is True:
+                logout_diag = "logout confirmado"
+            elif self._last_e7_logout_confirmed is False:
+                logout_diag = "logout NÃO confirmado"
+            else:
+                logout_diag = "logout não aplicável"
+            resposta_diag = (
+                f", resposta={self._last_e7_logout_response}"
+                if self._last_e7_logout_response
+                else ""
+            )
+            e7_diag = (
+                f"{e7_age:.1f}s desde o encerramento do último E7 "
+                f"({self._last_e7_context or 'contexto desconhecido'}; "
+                f"{logout_diag}{resposta_diag})"
+            )
+
         if self._last_poll_success_monotonic is None:
             if not self._poll_failure_logged:
                 _LOGGER.error(
                     "Falha na consulta de status (nenhuma comunicação bem-sucedida "
-                    "ainda): %s — próximas falhas iguais não serão repetidas no log "
+                    "ainda; %s%s): %s — próximas falhas iguais não serão repetidas no log "
                     "até a comunicação normalizar",
+                    e7_diag,
+                    restart_diag,
                     err,
                 )
                 self._poll_failure_logged = True
@@ -1068,21 +1151,38 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             if not self._poll_failure_logged:
                 _LOGGER.error(
                     "Falha na consulta de status: %s (sem comunicação bem-sucedida há "
-                    "%.1fs, acima da tolerância de %ds — marcando como indisponível; "
+                    "%.1fs, acima da tolerância de %ds; %s%s — marcando como indisponível; "
                     "próximas falhas iguais não serão repetidas no log até a "
                     "comunicação normalizar)",
                     err,
                     elapsed,
                     DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+                    e7_diag,
+                    restart_diag,
                 )
                 self._poll_failure_logged = True
             raise UpdateFailed(str(err)) from err
 
+        if self._consecutive_poll_failures == 1:
+            _LOGGER.debug(
+                "Primeira falha isolada na consulta de status (tolerada, %.1fs desde "
+                "a última com sucesso, dentro do limite de %ds; %s%s): %s",
+                elapsed,
+                DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+                e7_diag,
+                restart_diag,
+                err,
+            )
+            return
+
         _LOGGER.warning(
-            "Falha isolada na consulta de status (tolerada, %.1fs desde a última com "
-            "sucesso, dentro do limite de %ds): %s",
+            "Falha consecutiva na consulta de status #%d (tolerada, %.1fs desde a "
+            "última com sucesso, dentro do limite de %ds; %s%s): %s",
+            self._consecutive_poll_failures,
             elapsed,
             DEFAULT_CONNECTION_HEALTH_TIMEOUT,
+            e7_diag,
+            restart_diag,
             err,
         )
 
@@ -1580,6 +1680,135 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                 "Sessão 0xE7: falha ao encerrar TCP após %s (%s)", context, err
             )
 
+    async def _async_finalize_legacy_eeprom_session(
+        self, context: str, *, authenticated: bool
+    ) -> None:
+        """Finaliza uma utilização do protocolo legado ``0xE7``.
+
+        Reproduz o handshake de desconexão observado no APK oficial:
+
+        * se a autenticação E7 foi aceita e o socket ainda existe, envia o
+          logout ``05 E7 01 15 06 7E 71``;
+        * aguarda por no máximo ``LEGACY_E7_LOGOUT_TIMEOUT`` (250 ms) a
+          resposta COMPLETA de 8 bytes ``06 E7 02 95 48 FF 91 AF`` usando
+          o framing normal;
+        * se chegar completa, valida checksum e conteúdo;
+        * completa ou parcial, fecha o TCP em seguida;
+        * mantém o lock da ``transaction()`` por mais 1 segundo antes de
+          devolvê-lo ao scheduler de STATUS (ver nota abaixo).
+
+        Se a autenticação foi negada não enviamos logout (não houve sessão
+        autenticada), mas ainda fechamos o TCP e preservamos a pausa. Em
+        erro de leitura/protocolo após autenticar, tentamos completar o
+        handshake de logout se a conexão ainda estiver válida. Uma falha
+        no logout é registrada, mas não mascara o resultado da operação
+        E7 principal; o TCP é fechado obrigatoriamente em seguida.
+
+        Sobre a pausa de 1s ao final: intenção original desde a primeira
+        versão que a introduziu (bem antes do handshake de logout acima
+        existir) — mantida aqui mesmo após o logout ficar confirmável,
+        como margem de segurança adicional caso a central ainda precise de
+        um instante para "se recompor" além do que o logout por si só
+        garante. Precisa continuar dentro do lock da transação (por isso
+        esta função é sempre chamada de dentro de um ``finally`` que ainda
+        está sob ``async with self.client.transaction():`` — ver os dois
+        chamadores) — uma versão intermediária desta mesma correção
+        (nesta série) tinha deixado essa pausa FORA do lock por engano,
+        análise externa apontou que isso a deixava sem nenhum efeito real
+        (o scheduler de status conseguia abrir uma conexão nova durante o
+        próprio segundo que deveria ser de acomodação); corrigido incluindo
+        o lock explicitamente na proteção, não só o fechamento do TCP.
+        """
+        logout_confirmed: bool | None = None
+        logout_response_hex: str | None = None
+
+        if authenticated and self.client.connected:
+            logout_confirmed = False
+            t_logout = time.monotonic()
+            frame_logout = legacy_eeprom.montar_comando_logout()
+            _LOGGER.debug(
+                "Sessão legada 0xE7: enviando logout após %s; aguardando no máximo "
+                "%.3fs pela resposta esperada=%s",
+                context,
+                LEGACY_E7_LOGOUT_TIMEOUT,
+                legacy_eeprom.RESPOSTA_LOGOUT.hex(" ").upper(),
+            )
+            try:
+                resposta_logout = await self.client.send_command_in_transaction(
+                    frame_logout,
+                    context=f"logout sessão legada 0xE7 ({context})",
+                    timeout=LEGACY_E7_LOGOUT_TIMEOUT,
+                )
+                logout_response_hex = resposta_logout.raw.hex(" ").upper()
+                logout_elapsed = time.monotonic() - t_logout
+
+                if not resposta_logout.valid_checksum:
+                    _LOGGER.debug(
+                        "Sessão legada 0xE7: logout respondeu em %.3fs após %s, "
+                        "mas o checksum é inválido. Recebido=%s esperado=%s",
+                        logout_elapsed,
+                        context,
+                        logout_response_hex,
+                        legacy_eeprom.RESPOSTA_LOGOUT.hex(" ").upper(),
+                    )
+                elif resposta_logout.raw != legacy_eeprom.RESPOSTA_LOGOUT:
+                    _LOGGER.debug(
+                        "Sessão legada 0xE7: logout respondeu em %.3fs após %s, "
+                        "mas a resposta difere da esperada. Recebido=%s esperado=%s",
+                        logout_elapsed,
+                        context,
+                        logout_response_hex,
+                        legacy_eeprom.RESPOSTA_LOGOUT.hex(" ").upper(),
+                    )
+                else:
+                    logout_confirmed = True
+                    _LOGGER.debug(
+                        "Sessão legada 0xE7: logout CONFIRMADO em %.3fs após %s; "
+                        "resposta completa=%s",
+                        logout_elapsed,
+                        context,
+                        logout_response_hex,
+                    )
+            except PanelConnectionError as err:
+                # O fechamento abaixo continua obrigatório; uma falha no
+                # handshake de logout não pode mascarar a operação principal.
+                _LOGGER.debug(
+                    "Sessão legada 0xE7: logout NÃO confirmado após %s (%s); "
+                    "TCP será encerrado imediatamente",
+                    context,
+                    err,
+                )
+        elif authenticated:
+            logout_confirmed = False
+            _LOGGER.debug(
+                "Sessão legada 0xE7: sessão autenticada após %s, mas a conexão "
+                "já estava fechada antes do logout; logout não confirmado",
+                context,
+            )
+
+        await self._async_close_legacy_eeprom_connection(context)
+        self._last_e7_finished_monotonic = time.monotonic()
+        self._last_e7_context = context
+        self._last_e7_logout_confirmed = logout_confirmed
+        self._last_e7_logout_response = logout_response_hex
+        logout_diag = (
+            "confirmado" if logout_confirmed is True
+            else "não confirmado" if logout_confirmed is False
+            else "não aplicável (autenticação E7 não concluída)"
+        )
+        _LOGGER.debug(
+            "Sessão legada 0xE7: encerramento concluído após %s; logout=%s; "
+            "iniciando 1.0s de acomodação com o lock mantido",
+            context,
+            logout_diag,
+        )
+        # Mantém o lock adquirido por transaction() durante a acomodação —
+        # esta função só é chamada de dentro de um finally que ainda está
+        # sob esse lock (ver docstring acima). O TCP já está fechado, então
+        # nenhum STATUS pode abrir a próxima conexão antes de completar
+        # este segundo.
+        await asyncio.sleep(1.0)
+
     async def _async_legacy_eeprom_session(self, paginas_info: list[tuple[int, int]]) -> bytes:
         """Autentica com a senha de leitura e lê todas as páginas pedidas
         em sequência, na conexão persistente já existente.
@@ -1601,6 +1830,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         t_inicio = time.monotonic()
         try:
             async with self.client.transaction():
+                e7_authenticated = False
                 try:
                     # O fechamento da conexão (finally abaixo) deve cobrir a
                     # sessão 0xE7 INTEIRA, inclusive autenticação negada, erro
@@ -1622,6 +1852,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                             "configurada — confira se está correta (6 dígitos, "
                             "\"Senha Acesso Remoto\" no app AMT Mobile)"
                         )
+                    e7_authenticated = True
                     await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
 
                     dados = bytearray()
@@ -1656,8 +1887,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                         dados += dados_uteis
                         await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
                 finally:
-                    await self._async_close_legacy_eeprom_connection(
-                        "sessão de leitura de EEPROM"
+                    # Finaliza toda utilização E7: em sessão autenticada,
+                    # envia logout e aguarda/valida a resposta completa de
+                    # 8 bytes; depois fecha o TCP e mantém o lock por 1 s.
+                    await self._async_finalize_legacy_eeprom_session(
+                        "sessão de leitura de EEPROM",
+                        authenticated=e7_authenticated,
                     )
         except PanelConnectionError as err:
             raise UpdateFailed(str(err)) from err
@@ -1716,6 +1951,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             # status podia se intercalar NO MEIO da troca autenticada.
             t_inicio = time.monotonic()
             async with self.client.transaction():
+                e7_authenticated = False
                 try:
                     frame_auth = legacy_eeprom.montar_comando_autenticar(
                         self._legacy_eeprom_password
@@ -1730,9 +1966,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                     if not legacy_eeprom.autenticacao_bem_sucedida(resposta_auth.content):
                         _LOGGER.warning(
                             "Consulta de tensão: falha na identificação com a senha de "
-                            "leitura configurada — tentando de novo em 5 minutos"
+                            "leitura configurada — tentando de novo no próximo ciclo"
                         )
                         return
+                    e7_authenticated = True
                     await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
 
                     frame = legacy_eeprom.montar_comando_status_tensao()
@@ -1747,29 +1984,13 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                         time.monotonic() - t_inicio,
                     )
                 finally:
-                    # Fecha a conexão ainda dentro da transação (mesmo
-                    # motivo/mecanismo de `_async_legacy_eeprom_session` —
-                    # ver `_async_close_legacy_eeprom_connection`). Cobre
-                    # tanto o `return` de autenticação negada acima quanto
-                    # o caminho de sucesso.
-                    await self._async_close_legacy_eeprom_connection(
-                        "consulta de tensão"
+                    # Finaliza toda utilização E7: em sessão autenticada,
+                    # envia logout e aguarda/valida a resposta completa de
+                    # 8 bytes; depois fecha o TCP e mantém o lock por 1 s.
+                    await self._async_finalize_legacy_eeprom_session(
+                        "consulta de tensão",
+                        authenticated=e7_authenticated,
                     )
-                # Pausa de acomodação (heurística, não uma medição exata):
-                # intenção original deste sleep (desde a primeira versão que
-                # o introduziu), restaurada aqui após uma análise externa
-                # apontar corretamente que uma versão anterior desta mesma
-                # correção tinha deixado o sleep FORA do `async with` — nesse
-                # caso, o lock já estaria liberado antes da pausa, deixando o
-                # scheduler de status livre para abrir uma conexão nova e
-                # enviar um STATUS durante o próprio segundo que deveria ser
-                # de acomodação, sem proteger nada — só atrasando a
-                # atualização dos sensores de tensão em si, sem efeito real
-                # sobre a central. Aqui dentro do `async with`, de propósito:
-                # mantém o lock reservado durante a pausa inteira, dando à
-                # central um segundo sem nenhuma tentativa de nova conexão
-                # antes do próximo STATUS, mesmo com o TCP já fechado acima.
-                await asyncio.sleep(1.0)
             if not resposta.valid_checksum:
                 _LOGGER.warning("Consulta de tensão: checksum inválido na resposta")
                 return
@@ -2153,6 +2374,62 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
 
     def on_receptor_heartbeat(self) -> None:
         self.receptor_last_heartbeat = dt_util.utcnow()
+        self.async_update_listeners()
+
+    _NETWORK_RESTART_FIN_WINDOW_S = 1.0
+
+    def _correlate_network_restart_fins(self) -> None:
+        """Confirma reboot experimental se FINs remotos 9009/9010 coincidirem."""
+        fin_9009 = self.network_restart_fin_9009_candidate
+        fin_9010 = self.network_restart_fin_9010_candidate
+        if fin_9009 is None or fin_9010 is None:
+            return
+
+        delta_s = abs((fin_9009 - fin_9010).total_seconds())
+        self.network_restart_last_fin_delta_s = delta_s
+        if delta_s > self._NETWORK_RESTART_FIN_WINDOW_S:
+            return
+
+        detected_at = max(fin_9009, fin_9010)
+        # Evita emitir duas vezes o mesmo evento caso os listeners sejam
+        # acionados novamente sem um novo par de FINs.
+        if (
+            self.receptor_last_network_restart_suspected is not None
+            and detected_at <= self.receptor_last_network_restart_suspected
+        ):
+            return
+
+        self.receptor_last_network_restart_suspected = detected_at
+        self.network_restart_in_progress = True
+        _LOGGER.warning(
+            "Intelbras: REINICIALIZAÇÃO DE REDE DETECTADA (experimental): "
+            "FIN remoto recebido nas conexões 9009 e 9010 com diferença de %.3fs "
+            "(janela <= %.1fs). A central iniciou o encerramento simultâneo "
+            "das conexões TCP e pode ficar temporariamente indisponível",
+            delta_s,
+            self._NETWORK_RESTART_FIN_WINDOW_S,
+        )
+
+    def on_panel_graceful_disconnect(self) -> None:
+        """Registra FIN remoto da conexão de comandos/status (porta 9009)."""
+        now = dt_util.utcnow()
+        self.network_restart_fin_9009_candidate = now
+        _LOGGER.debug(
+            "Intelbras: FIN remoto detectado na porta 9009 — candidato experimental "
+            "a reinicialização de rede"
+        )
+        self._correlate_network_restart_fins()
+        self.async_update_listeners()
+
+    def on_receptor_graceful_disconnect(self) -> None:
+        """Registra FIN remoto da conexão Receptor IP (porta 9010/configurada)."""
+        now = dt_util.utcnow()
+        self.network_restart_fin_9010_candidate = now
+        _LOGGER.debug(
+            "Receptor IP: FIN remoto detectado — candidato experimental a "
+            "reinicialização de rede"
+        )
+        self._correlate_network_restart_fins()
         self.async_update_listeners()
 
 

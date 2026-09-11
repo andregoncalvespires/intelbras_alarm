@@ -125,6 +125,12 @@ DEFAULT_RECEPTOR_IP_PORT = 9010
 # o usuário esperar até 8s por feedback de um único comando, e a
 # reconexão em caso de queda real também demorava até 8s por tentativa.
 DEFAULT_REQUEST_TIMEOUT = 3  # segundos
+# Timeout exclusivo da RESPOSTA de STATUS nas famílias que usam PanelClient
+# (1016/2018/4010 e derivadas). NÃO altera o timeout de conexão TCP: se o
+# socket precisar ser aberto/reaberto, asyncio.open_connection() continua
+# usando DEFAULT_REQUEST_TIMEOUT (3s). Também não altera comandos reais.
+STATUS_REQUEST_TIMEOUT = 0.30  # segundos; experimental
+LEGACY_E7_LOGOUT_TIMEOUT = 0.25  # segundos; experimental, somente E7/15
 # Timeout de TOLERÂNCIA ACUMULADA: usado só pela consulta de status
 # (nunca por comandos reais, que sempre falham rápido e visivelmente — ver
 # coordinator.py). Se uma consulta de status isolada falhar mas o tempo

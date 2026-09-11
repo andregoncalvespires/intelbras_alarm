@@ -90,7 +90,15 @@ def parse_hex_bytes(text: str) -> bytes:
 
 
 def build_command(password: str, command: int, content: bytes = b"") -> bytes:
-    """Monta um frame ISECNet/ISECMobile completo pronto para envio."""
+    """Monta um frame ISECNet/ISECMobile completo pronto para envio.
+
+    A senha faz parte de CADA frame ISECMobile. Portanto STATUS, PGM,
+    armar/desarmar etc. são autenticados individualmente em nível de
+    protocolo, mesmo quando reutilizamos a mesma conexão TCP. Reutilizar
+    o socket é apenas uma otimização de transporte; não equivale a manter
+    uma sessão de login autenticada. Isso difere do protocolo legado 0xE7,
+    que possui uma etapa de autenticação/sessão própria.
+    """
     if not (4 <= len(password) <= 6):
         raise ValueError("A senha deve ter entre 4 e 6 dígitos")
     isec_mobile = (

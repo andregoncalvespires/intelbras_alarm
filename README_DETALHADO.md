@@ -1239,6 +1239,15 @@ scheduler próprio baseado em `time.monotonic()`:
   são coalescidos: múltiplos pedidos simultâneos compartilham a mesma
   consulta seguinte, via `asyncio.Future` (`async_request_status_
   refresh()`), em vez de gerar uma consulta para cada.
+- **Timeout específico da resposta de status**: `STATUS_REQUEST_TIMEOUT`
+  (0,30s — famílias 1016/2018/4010 e derivadas; não se aplica à AMT
+  8000, que usa `panel_client_amt8000.py` separado), bem menor que o
+  timeout geral de 3s usado por outros comandos. Como o polling é
+  rápido (a cada ~250ms), uma troca travada some rápido e o scheduler
+  tenta de novo quase na hora, em vez de bloquear o ciclo por até 3
+  segundos esperando uma resposta que não vai chegar. Não altera o
+  timeout de abertura/reabertura da conexão TCP em si, nem o de outros
+  comandos (PGM, arme/desarme).
 
 #### Prioridade de comando sobre o scheduler de status
 
@@ -1269,6 +1278,43 @@ de status simulada e um comando simulado — confirmando a sequência
 completa esperada: `status em andamento → comando chega (impede novas
 consultas) → status em andamento termina normalmente → comando espera
 o lock, envia, conclui → status retoma`.
+
+#### Detecção experimental de reinicialização de rede (correlação de FIN duplo)
+
+Sensor de diagnóstico (`IntelbrasReceptorNetworkRestartSensor`,
+"Reinicialização de rede detectada") que correlaciona o fechamento
+gracioso (FIN TCP) de **duas** conexões independentes: a de
+comandos/status (porta configurada, ex. 9009) e a do Receptor IP
+(porta configurada, ex. 9010). Um FIN isolado em qualquer uma das duas
+é só um candidato; o sensor só confirma quando ambos ocorrem dentro de
+uma janela de 1,0 segundo — padrão observado num PCAP real da AMT 4010
+no início da reinicialização diária do subsistema de rede da própria
+central.
+
+Mecanismo: `PanelClient` e `ReceptorIPServer` ganham cada um um
+callback opcional (`set_on_remote_graceful_disconnect()`/
+`on_graceful_disconnect=`), disparado **somente** quando o
+`StreamReader` observa EOF limpo vindo do peer — nunca quando o
+fechamento é iniciado pela própria integração (switch desligado,
+unload, encerramento deliberado de uma sessão `0xE7`), que sempre passa
+por `_close_locked()`/equivalente, sem passar por esse caminho.
+`coordinator.on_panel_graceful_disconnect()`/
+`on_receptor_graceful_disconnect()` registram o horário de cada
+candidato e chamam `_correlate_network_restart_fins()`, que só marca
+`network_restart_in_progress = True` (e dispara o `_LOGGER.warning`) se
+a diferença entre os dois candidatos for `<= 1,0s`.
+
+**Puramente diagnóstico**: não muda disponibilidade de nenhuma
+entidade funcional, não suprime warnings, não altera a janela de
+tolerância de falhas de status (10s). Usado apenas para enriquecer o
+contexto das mensagens de falha de status (`_handle_poll_failure`) e
+alimentar o sensor de diagnóstico. `network_restart_in_progress`
+volta a `False` sozinho no primeiro status bem-sucedido seguinte.
+
+Validado com a função de correlação real, extraída via AST, em três
+cenários: só um FIN chega (não confirma), os dois chegam dentro da
+janela (confirma, com o delta calculado corretamente), os dois chegam
+fora da janela — mesmo com ambos presentes (não confirma).
 
 ### Conexão TCP persistente
 `panel_client.PanelClient` abre a conexão uma única vez e a mantém aberta.
@@ -1863,20 +1909,73 @@ anteriores).
   confirmadas independentemente para os demais modelos fora do limiar
   do `0x5C` (assume-se o mesmo layout, por virem do mesmo trecho de
   código do app, não específico de modelo).
-- **Reaproveita a conexão persistente já existente** (`self.client`,
-  mesma usada no polling normal) — só roda sob demanda (botão de
-  sincronizar zonas / serviço `read_events`), nunca durante o ciclo de
-  consulta regular. A primeira versão desta funcionalidade tentava
-  abrir uma conexão TCP **isolada e separada**, pensando em evitar
-  misturar protocolos numa mesma conexão — só que a central **só
-  aceita um cliente conectado por vez**, então a segunda conexão
-  sempre falhava enquanto o polling normal já estivesse rodando (bug
-  real relatado em produção). Corrigido reaproveitando `self.client`
-  — o framing de baixo nível (`[Nº Bytes]` como primeiro byte) já é
+- **Reaproveita o mesmo `self.client`** (gerenciador de conexão já
+  existente, mesmo usado no polling normal) — só roda sob demanda
+  (botão de sincronizar zonas / serviço `read_events`), nunca durante o
+  ciclo de consulta regular. A primeira versão desta funcionalidade
+  tentava abrir uma conexão TCP **isolada e separada**, pensando em
+  evitar misturar protocolos numa mesma conexão — só que a central **só
+  aceita um cliente conectado por vez**, então a segunda conexão sempre
+  falhava enquanto o polling normal já estivesse rodando (bug real
+  relatado em produção). Corrigido reaproveitando `self.client` — o
+  framing de baixo nível (`[Nº Bytes]` como primeiro byte) já é
   genérico o suficiente pra funcionar com qualquer comando, `0xE7`
-  incluso. Isso, aliás, bate com o que a própria captura real do app
-  oficial mostrou: consulta de status normal e comandos `0xE7` na
-  **mesma** conexão, sem reabrir nada entre um e outro.
+  incluso.
+  
+  Isso não significa mais manter a MESMA conexão TCP aberta
+  indefinidamente entre uma sessão `0xE7` e a próxima consulta de
+  status — ver "Encerramento de sessão `0xE7`: logout e fechamento
+  incondicional da conexão" logo abaixo para o motivo.
+
+#### Encerramento de sessão `0xE7`: logout e fechamento incondicional da conexão
+
+**Bug real corrigido**, diagnosticado pelo próprio usuário com log de
+produção preciso: a consulta de status às vezes não recebia os 73
+bytes esperados. A causa era **dessincronização de enquadramento do
+stream TCP**, não timeout insuficiente — 4 bytes residuais de uma
+sessão `0xE7` anterior (ex.: `48 FF 91 AF`) precediam o frame de status
+real; o leitor genérico interpretava o primeiro byte residual como
+"Nº Bytes" e ficava esperando um total que nunca fechava (log
+observado batia exatamente: "recebidos 60/73" = 3 bytes residuais + 57
+do frame de status real).
+
+Esses 4 bytes residuais acabaram sendo identificados como a **segunda
+metade da própria resposta de logout da central** (frame completo de 8
+bytes: `06 E7 02 95 48 FF 91 AF`, checksum ISECNet validado
+independentemente) — uma resposta que a central sempre mandava, mas
+que a integração nunca lia, deixando-a no buffer da conexão persistente
+até a próxima consulta de status pegá-la por engano.
+
+Correção em duas partes, sempre executada ao final de qualquer sessão
+`0xE7` (leitura de EEPROM legada ou consulta de tensão), sucesso ou
+falha:
+
+1. **Logout explícito**: se a sessão chegou a autenticar, envia
+   `05 E7 01 15 06 7E 71` e aguarda (no máximo 250ms) a resposta
+   completa de 8 bytes acima, usando o mesmo framing genérico de
+   qualquer comando — sem tratamento especial. Se a autenticação foi
+   negada, não há sessão pra encerrar, então o logout não é enviado.
+   Uma falha ou timeout no logout é só registrado em log — nunca
+   mascara o resultado da operação `0xE7` principal.
+2. **Fechamento incondicional do TCP**, executado sempre em seguida
+   (autenticação negada, checksum inválido no logout, timeout, ou
+   sucesso completo) — garante que a **próxima** consulta de status
+   sempre comece num stream TCP nunca usado, sem chance de arrastar
+   nenhuma sobra. Custo aceito: reconectar a cada consulta de tensão (a
+   cada 5 minutos) ou leitura de nomes/eventos (esporádica) — não a
+   cada ciclo rápido de status.
+
+Depois de fechar, o lock da transação ainda é mantido por **mais 1
+segundo** antes de ser devolvido ao scheduler de status — margem de
+segurança adicional (herdada de uma versão bem mais antiga desta
+mesma correção, mantida como precaução mesmo com o logout já
+confirmável). Precisa ficar dentro do mesmo `async with
+client.transaction():` que fez o logout/fechamento — uma versão
+intermediária desta correção tinha deixado essa pausa fora do lock por
+engano, o que a deixava sem nenhum efeito real (o scheduler de status
+conseguia abrir uma conexão nova durante o próprio segundo que devia
+ser de acomodação); corrigido depois de uma segunda análise externa
+apontar o problema.
 
 #### Tensão da fonte e da bateria (sub-comando `[1, 0x17]`)
 

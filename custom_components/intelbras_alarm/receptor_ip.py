@@ -38,6 +38,16 @@ CMD_CONNECT_INFO = 0x94  # a central informa conta/canal/MAC ao conectar
 CMD_EVENT_NO_DATE = 0xB0  # evento sem data/hora embutida (16 bytes de conteúdo)
 CMD_EVENT_WITH_DATE = 0xB4  # evento com data/hora embutida (28 bytes de conteúdo)
 CMD_HEARTBEAT = 0xF7  # "sinal de vida" — 1 byte sozinho, sem framing, sem conteúdo
+CMD_DATE_TIME_REQUEST = 0x80  # central solicita data/hora ao Receptor IP
+
+# Comando 0x80 — documentado na revisão 13 do protocolo oficial Receptor IP.
+# A central pode incluir no conteúdo um byte de timezone negativo:
+#   sem conteúdo -> sem timezone; 0x00 -> GMT-0; 0x01 -> GMT-1; ...;
+#   0x07 -> GMT-7. Ex.: 02 80 03 7E = solicitar data/hora em GMT-3
+# (Brasília no documento). A resposta correta seria um frame 0x80 com
+# ano/mês/dia/dia-da-semana/hora/minuto/segundo. Por decisão experimental,
+# esta integração NÃO implementa essa resposta por enquanto: a central já
+# mantém sincronismo de data/hora pelo receptor/cloud Intelbras configurado.
 
 # A central se desconecta sozinha se não conseguir confirmação da central
 # receptora dentro de um tempo (30s Ethernet / 60s GPRS, conforme o
@@ -141,18 +151,28 @@ class ReceptorIPServer:
         expected_panel_ip: str,
         on_event: Callable[[dict], Awaitable[None] | None],
         on_heartbeat: Callable[[], Awaitable[None] | None],
+        on_graceful_disconnect: Callable[[], Awaitable[None] | None] | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._expected_panel_ip = expected_panel_ip
         self._on_event = on_event
         self._on_heartbeat = on_heartbeat
+        # Callback experimental: só é chamado quando uma conexão já
+        # identificada pela central termina em EOF limpo exatamente entre
+        # frames. Em asyncio isso é o sinal de aplicação compatível com um
+        # FIN TCP recebido do peer (RST/timeout seguem caminhos diferentes).
+        self._on_graceful_disconnect = on_graceful_disconnect
         self._server: asyncio.base_events.Server | None = None
+        # Evita classificar como FIN da central o EOF provocado por nós
+        # mesmos durante unload/reload da integração.
+        self._stopping = False
         # Conexões atualmente aceitas (não só o socket de escuta) — ver
         # async_stop() para o motivo de rastrear isso explicitamente.
         self._active_writers: set[asyncio.StreamWriter] = set()
 
     async def async_start(self) -> None:
+        self._stopping = False
         self._server = await asyncio.start_server(
             self._handle_connection, self._host, self._port
         )
@@ -164,6 +184,7 @@ class ReceptorIPServer:
         )
 
     async def async_stop(self) -> None:
+        self._stopping = True
         if self._server is not None:
             self._server.close()
             # Mesma correção de PanelClient._close_locked() (ver comentário
@@ -228,13 +249,23 @@ class ReceptorIPServer:
         _LOGGER.debug("Receptor IP: central conectada de %s", peer_ip)
         self._active_writers.add(writer)
         handshake_ok = False
+        graceful_peer_close = False
         try:
             while True:
                 timeout = HANDSHAKE_TIMEOUT if not handshake_ok else IDLE_TIMEOUT
                 try:
                     header = await asyncio.wait_for(reader.readexactly(1), timeout=timeout)
-                except asyncio.IncompleteReadError:
-                    break  # conexão encerrada pela central
+                except asyncio.IncompleteReadError as err:
+                    # EOF limpo entre frames, depois do 0x94/evento ter
+                    # identificado a central. Na captura real da AMT 4010
+                    # este é exatamente o comportamento visto quando a
+                    # central envia FIN na porta do Receptor IP pouco antes
+                    # de reinicializar sua pilha de rede. É EXPERIMENTAL:
+                    # um fechamento voluntário por outro motivo também pode
+                    # produzir EOF, por isso tratamos como "possível" reboot.
+                    if handshake_ok and not err.partial and not self._stopping:
+                        graceful_peer_close = True
+                    break
                 except asyncio.TimeoutError:
                     _LOGGER.debug(
                         "Receptor IP: %s sem enviar nada por %ss, encerrando conexão",
@@ -293,6 +324,28 @@ class ReceptorIPServer:
                         info["canal"],
                     )
                     handshake_ok = True
+                elif parsed.command == CMD_DATE_TIME_REQUEST:
+                    # Solicitação de data/hora feita pela CENTRAL ao Receptor IP.
+                    # O conteúdo opcional informa GMT negativo: 0x00=GMT-0,
+                    # 0x01=GMT-1, ... 0x07=GMT-7; vazio=sem timezone.
+                    # Exemplo oficial: 02 80 03 7E = GMT-3 (Brasília).
+                    #
+                    # Não respondemos com data/hora nesta versão. O ACK genérico
+                    # acima é mantido apenas para preservar o comportamento já
+                    # existente da integração enquanto esse suporte não é
+                    # implementado deliberadamente.
+                    if parsed.content:
+                        tz = parsed.content[0]
+                        tz_desc = f"GMT-{tz}" if 0 <= tz <= 7 else f"0x{tz:02X}"
+                    else:
+                        tz_desc = "sem timezone"
+                    _LOGGER.debug(
+                        "Receptor IP: comando 0x80 recebido — central solicitou "
+                        "data/hora (%s); resposta de calendário não implementada "
+                        "nesta versão experimental",
+                        tz_desc,
+                    )
+                    handshake_ok = True
                 elif parsed.command in (CMD_EVENT_NO_DATE, CMD_EVENT_WITH_DATE):
                     evento = parse_event(
                         parsed.content, with_date=(parsed.command == CMD_EVENT_WITH_DATE)
@@ -320,6 +373,8 @@ class ReceptorIPServer:
         except (ConnectionResetError, OSError) as err:
             _LOGGER.debug("Receptor IP: conexão com %s encerrada (%s)", peer_ip, err)
         finally:
+            if graceful_peer_close and self._on_graceful_disconnect is not None:
+                await _maybe_await(self._on_graceful_disconnect())
             self._active_writers.discard(writer)
             writer.close()
             try:

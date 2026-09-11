@@ -61,6 +61,12 @@ DELAY_ENTRE_REQUISICOES = 0.15  # segundos -- mesmo valor usado no
 # evita sobrecarregar a central com requisições em sequência rápida
 # demais.
 
+# Resposta COMPLETA do logout legado 0xE7, confirmada pela engenharia
+# reversa do APK oficial e pelo framing/checksum do protocolo. O byte 0x06
+# anuncia 6 bytes até o fim do conteúdo, seguidos de 1 checksum, portanto
+# o frame total possui 8 bytes.
+RESPOSTA_LOGOUT = bytes.fromhex("06 E7 02 95 48 FF 91 AF")
+
 
 def calcular_crc(valores: list[int]) -> int:
     """CRC próprio deste protocolo — NÃO é CRC16 padrão nenhum.
@@ -121,6 +127,27 @@ def montar_comando_autenticar(senha_leitura: str) -> bytes:
 def montar_comando_leitura(endereco: int, quantidade: int) -> bytes:
     """Comando de leitura de EEPROM (sub-comando ``[4, 18]`` dentro do ``0xE7``)."""
     corpo = [4, 18, (endereco >> 8) & 0xFF, endereco & 0xFF, quantidade & 0xFF]
+    crc = calcular_crc(corpo)
+    corpo += [(crc >> 8) & 0xFF, crc & 0xFF]
+    frame = [0xE7] + corpo
+    frame_sem_checksum = [len(frame)] + frame
+    cs = checksum(bytes(frame_sem_checksum))
+    return bytes(frame_sem_checksum + [cs])
+
+
+def montar_comando_logout() -> bytes:
+    """Monta o logout da sessão legada ``0xE7``.
+
+    Frame confirmado pelo usuário contra hardware real::
+
+        05 E7 01 15 06 7E 71
+
+    O fluxo atual envia este frame ao final de uma sessão E7 autenticada,
+    aguarda a resposta COMPLETA ``RESPOSTA_LOGOUT``, valida o frame e só
+    então fecha a conexão TCP. Isso reproduz o handshake observado no APK
+    oficial antes da desconexão.
+    """
+    corpo = [1, 0x15]
     crc = calcular_crc(corpo)
     corpo += [(crc >> 8) & 0xFF, crc & 0xFF]
     frame = [0xE7] + corpo
