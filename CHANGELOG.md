@@ -8,6 +8,27 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.1.2]
+
+### Corrigido — divergência entre o que foi pedido e o que foi publicado na 2.1.1
+
+Na 2.1.1, além da mudança combinada explicitamente com o usuário
+(manter a pausa de acomodação de 1s dentro do lock — ver `2.1.1`
+abaixo), também foi removida por conta própria a função
+`send_without_response_in_transaction()` de `panel_client.py` (código
+não usado em lugar nenhum, sugerido como remoção numa análise anterior)
+— sem reconfirmar isso com o usuário depois que o pedido explícito
+final foi "implemente na íntegra". Usuário percebeu a divergência e
+pediu correção.
+
+Corrigido restaurando a função exatamente como estava no arquivo
+recebido do usuário. Confirmado com diff byte a byte contra o arquivo
+original: 7 dos 8 arquivos adotados na 2.1.1 já eram idênticos; agora
+o oitavo (`panel_client.py`) também é — a única diferença
+remanescente, em `coordinator.py`, é exatamente a pausa de 1s mantida
+dentro do lock, que foi um pedido explícito do usuário, não uma
+liberdade tomada.
+
 ## [2.1.1]
 
 Passou por duas rodadas de pré-lançamento (v2.1.0-beta e v2.1.1-beta,
