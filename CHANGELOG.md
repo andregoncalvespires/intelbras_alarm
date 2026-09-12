@@ -8,6 +8,23 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.1.4]
+
+### Corrigido — função morta removida definitivamente
+
+`send_without_response_in_transaction()` (`panel_client.py`) — código
+não usado em lugar nenhum do pacote, sobra de uma iteração anterior de
+uma versão testada pela comunidade. Já tinha sido identificada como
+dead code em análises anteriores desta série, mas acabou restaurada
+por engano nas versões 2.1.2/2.1.3 ao corrigir uma divergência
+diferente. Usuário não conseguiu dar acesso de escrita a um
+colaborador via token fine-grained do GitHub (limitação atual e
+documentada do próprio GitHub: esse tipo de token não suporta acesso a
+repositórios onde a conta é apenas colaboradora, só onde é dona —
+alternativa é o token clássico) e trouxe a correção final por conta
+própria, num novo arquivo. Removida definitivamente, sem deixar
+nenhuma referência.
+
 ## [2.1.3]
 
 ### Corrigido — ainda havia uma diferença em relação ao arquivo recebido do usuário

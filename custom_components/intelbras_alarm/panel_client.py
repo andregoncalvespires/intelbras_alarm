@@ -321,52 +321,6 @@ class PanelClient:
             raise PanelConnectionError("Comunicação com a central está desativada")
         return await self._send_command_locked(frame, context, timeout=timeout)
 
-    async def send_without_response_in_transaction(
-        self, frame: bytes, context: str | None = None
-    ) -> None:
-        """Envia um frame dentro de ``transaction()`` sem ler resposta.
-
-        Usado no teste de encerramento do protocolo legado 0xE7: após uma
-        sessão autenticada enviamos o logout, aguardamos somente o
-        ``writer.drain()`` (para entregar o frame à pilha TCP local) e
-        fechamos o socket imediatamente. Assim a eventual resposta do
-        logout não entra no parser genérico nem fica como resíduo para o
-        próximo comando.
-
-        O lock deve já estar adquirido pelo chamador via ``transaction()``.
-        """
-        if not self._enabled:
-            raise PanelConnectionError("Comunicação com a central está desativada")
-        if not self._connected:
-            await self._connect_locked()
-
-        assert self._writer is not None
-        label = f" [{context}]" if context else ""
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        _LOGGER.debug(
-            "enviando comando sem aguardar resposta%s: frame=%s",
-            label,
-            frame.hex(" ").upper(),
-        )
-        try:
-            self._writer.write(frame)
-            await asyncio.wait_for(self._writer.drain(), timeout=self._timeout)
-        except asyncio.TimeoutError as err:
-            elapsed = loop.time() - started
-            await self._close_locked()
-            raise PanelConnectionError(
-                f"Falha de comunicação com a central{label}: tempo limite "
-                f"excedido ({self._timeout}s) durante envio/drain sem aguardar "
-                f"resposta ({elapsed:.3f}s)"
-            ) from err
-        except OSError as err:
-            await self._close_locked()
-            detail = str(err) or err.__class__.__name__
-            raise PanelConnectionError(
-                f"Falha de comunicação com a central{label}: {detail}"
-            ) from err
-
     async def _send_command_locked(
         self,
         frame: bytes,
