@@ -1965,17 +1965,14 @@ falha:
    cada 5 minutos) ou leitura de nomes/eventos (esporádica) — não a
    cada ciclo rápido de status.
 
-Depois de fechar, o lock da transação ainda é mantido por **mais 1
-segundo** antes de ser devolvido ao scheduler de status — margem de
-segurança adicional (herdada de uma versão bem mais antiga desta
-mesma correção, mantida como precaução mesmo com o logout já
-confirmável). Precisa ficar dentro do mesmo `async with
-client.transaction():` que fez o logout/fechamento — uma versão
-intermediária desta correção tinha deixado essa pausa fora do lock por
-engano, o que a deixava sem nenhum efeito real (o scheduler de status
-conseguia abrir uma conexão nova durante o próprio segundo que devia
-ser de acomodação); corrigido depois de uma segunda análise externa
-apontar o problema.
+O lock da transação é liberado imediatamente após o fechamento — sem
+pausa extra. Versões anteriores desta correção mantiveram, em algum
+momento, uma pausa heurística de 1 segundo antes de liberar o lock
+(herdada de uma versão bem mais antiga, anterior a este handshake de
+logout existir) — removida definitivamente nesta versão: o handshake
+de logout, com resposta confirmada, já dá garantia suficiente de que a
+sessão foi encerrada de forma limpa, tornando essa margem adicional
+desnecessária.
 
 #### Tensão da fonte e da bateria (sub-comando `[1, 0x17]`)
 

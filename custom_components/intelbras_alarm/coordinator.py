@@ -1685,7 +1685,7 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     ) -> None:
         """Finaliza uma utilização do protocolo legado ``0xE7``.
 
-        Reproduz o handshake de desconexão observado no APK oficial:
+        Teste atual, reproduzindo o handshake de desconexão observado no APK:
 
         * se a autenticação E7 foi aceita e o socket ainda existe, envia o
           logout ``05 E7 01 15 06 7E 71``;
@@ -1694,30 +1694,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
           o framing normal;
         * se chegar completa, valida checksum e conteúdo;
         * completa ou parcial, fecha o TCP em seguida;
-        * mantém o lock da ``transaction()`` por mais 1 segundo antes de
-          devolvê-lo ao scheduler de STATUS (ver nota abaixo).
+        * libera o lock da ``transaction()`` imediatamente, sem pausa extra.
 
         Se a autenticação foi negada não enviamos logout (não houve sessão
-        autenticada), mas ainda fechamos o TCP e preservamos a pausa. Em
+        autenticada), mas ainda fechamos o TCP. Em
         erro de leitura/protocolo após autenticar, tentamos completar o
         handshake de logout se a conexão ainda estiver válida. Uma falha
         no logout é registrada, mas não mascara o resultado da operação
         E7 principal; o TCP é fechado obrigatoriamente em seguida.
-
-        Sobre a pausa de 1s ao final: intenção original desde a primeira
-        versão que a introduziu (bem antes do handshake de logout acima
-        existir) — mantida aqui mesmo após o logout ficar confirmável,
-        como margem de segurança adicional caso a central ainda precise de
-        um instante para "se recompor" além do que o logout por si só
-        garante. Precisa continuar dentro do lock da transação (por isso
-        esta função é sempre chamada de dentro de um ``finally`` que ainda
-        está sob ``async with self.client.transaction():`` — ver os dois
-        chamadores) — uma versão intermediária desta mesma correção
-        (nesta série) tinha deixado essa pausa FORA do lock por engano,
-        análise externa apontou que isso a deixava sem nenhum efeito real
-        (o scheduler de status conseguia abrir uma conexão nova durante o
-        próprio segundo que deveria ser de acomodação); corrigido incluindo
-        o lock explicitamente na proteção, não só o fechamento do TCP.
         """
         logout_confirmed: bool | None = None
         logout_response_hex: str | None = None
@@ -1798,16 +1782,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         )
         _LOGGER.debug(
             "Sessão legada 0xE7: encerramento concluído após %s; logout=%s; "
-            "iniciando 1.0s de acomodação com o lock mantido",
+            "TCP fechado e lock será liberado imediatamente",
             context,
             logout_diag,
         )
-        # Mantém o lock adquirido por transaction() durante a acomodação —
-        # esta função só é chamada de dentro de um finally que ainda está
-        # sob esse lock (ver docstring acima). O TCP já está fechado, então
-        # nenhum STATUS pode abrir a próxima conexão antes de completar
-        # este segundo.
-        await asyncio.sleep(1.0)
 
     async def _async_legacy_eeprom_session(self, paginas_info: list[tuple[int, int]]) -> bytes:
         """Autentica com a senha de leitura e lê todas as páginas pedidas
@@ -1887,9 +1865,6 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
                         dados += dados_uteis
                         await asyncio.sleep(legacy_eeprom.DELAY_ENTRE_REQUISICOES)
                 finally:
-                    # Finaliza toda utilização E7: em sessão autenticada,
-                    # envia logout e aguarda/valida a resposta completa de
-                    # 8 bytes; depois fecha o TCP e mantém o lock por 1 s.
                     await self._async_finalize_legacy_eeprom_session(
                         "sessão de leitura de EEPROM",
                         authenticated=e7_authenticated,

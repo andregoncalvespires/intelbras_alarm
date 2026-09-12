@@ -8,6 +8,26 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
+## [2.1.3]
+
+### Corrigido — ainda havia uma diferença em relação ao arquivo recebido do usuário
+
+A 2.1.2 corrigiu uma remoção não autorizada (`send_without_response_
+in_transaction()`), mas manteve deliberadamente uma outra diferença: a
+pausa de acomodação de 1 segundo após encerrar uma sessão `0xE7`,
+reaplicada dentro do lock por ter sido combinada explicitamente com o
+usuário numa rodada anterior. Usuário esclareceu que não deveria haver
+diferença nenhuma, nem essa.
+
+Corrigido removendo essa pausa também — `coordinator.py` volta a ser
+idêntico, byte a byte, ao arquivo recebido do usuário (junto com os
+outros 7 arquivos, já idênticos desde a 2.1.2). Nenhuma linha de
+código diverge mais do que foi testado e enviado pelo usuário.
+
+`README_DETALHADO.md` atualizado de volta: a seção sobre o
+encerramento de sessão `0xE7` não menciona mais a pausa de 1s, já que
+ela não existe mais nesta versão.
+
 ## [2.1.2]
 
 ### Corrigido — divergência entre o que foi pedido e o que foi publicado na 2.1.1
