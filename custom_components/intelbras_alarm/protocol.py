@@ -387,11 +387,19 @@ class PanelStatus:
     # está entre as três famílias (evita duplicar praticamente todas as
     # entidades sensor/binary_sensor entre elas).
     zones_comm_failure: dict[int, bool] = field(default_factory=dict)
+    # Quando a própria central reporta o modo Stay por partição, este mapa
+    # contém o valor autoritativo. ``None`` significa que aquele
+    # modelo/firmware não disponibiliza essa informação no STATUS e a
+    # integração deve continuar usando o rastreamento local do último
+    # comando enviado pelo HA.
+    partitions_stay_reported: dict[str, bool] | None = None
+    # Mapeamento diagnóstico do bit que originou cada valor acima.
+    partition_stay_bit_map: dict[str, tuple[str, int]] = field(default_factory=dict)
 
 
 def parse_status_2018(content: bytes) -> PanelStatus:
     """Parseia a resposta do comando 0x5A (43 bytes) — família 2018/1016."""
-    from .const import MODEL_TABLE, MODEL_UNKNOWN
+    from .const import MODEL_2018_SMART, MODEL_TABLE, MODEL_UNKNOWN
 
     zones_open = _bits_to_zone_map(content, 1, 6, 48)
     zones_violated = _bits_to_zone_map(content, 7, 6, 48)
@@ -428,6 +436,25 @@ def parse_status_2018(content: bytes) -> PanelStatus:
         "A": ("status22", 0),
         "B": ("status22", 1),
     }
+
+    # AMT 2018 E SMART: o app oficial lê o elemento 94 da resposta 0x5D
+    # (``content[92]`` na representação usada aqui): bit 0 = partição A
+    # em Stay; bit 1 = partição B em Stay. Não há limiar de firmware em
+    # torno dessa leitura no software oficial. Só publica a telemetria se
+    # o byte realmente estiver presente; respostas curtas preservam o
+    # rastreamento local histórico em vez de inventar um valor.
+    partitions_stay_reported: dict[str, bool] | None = None
+    partition_stay_bit_map: dict[str, tuple[str, int]] = {}
+    if model_key == MODEL_2018_SMART and len(content) > 92:
+        stay_status94 = content[92]
+        partitions_stay_reported = {
+            "A": bool(stay_status94 & 0x01),
+            "B": bool((stay_status94 >> 1) & 0x01),
+        }
+        partition_stay_bit_map = {
+            "A": ("status94", 0),
+            "B": ("status94", 1),
+        }
     # Status23 (2018/1016) / Status30 (4010): regra confirmada pelo usuário
     # a partir de captura de bytes reais (não mais leitura literal da
     # tabela de valores enumerados da doc, seção 7.4 — na prática é uma
@@ -532,6 +559,8 @@ def parse_status_2018(content: bytes) -> PanelStatus:
         zones_short_circuit=zones_short_circuit,
         pgm_expander_problem={},
         zone_expander_problem={},
+        partitions_stay_reported=partitions_stay_reported,
+        partition_stay_bit_map=partition_stay_bit_map,
     )
 
 
@@ -549,17 +578,12 @@ class ESmartExtraStatus:
 
     Extraído por engenharia reversa do app oficial (`Amt2018ESmart.
     updateZonesDevicesStatus()`/`updateGeneralNetworkStatus()`/
-    `updateStatusAttributes()`/`defineStay()`), com um exemplo de captura
+    `updateStatusAttributes()`), com um exemplo de captura
     real cruzado (checksum e byte de modelo confirmados, mas curto
     demais pra validar os valores das seções abaixo). Ver
     README_DETALHADO.md, seção "AMT 2018 E Smart — dados adicionais".
     """
 
-    # content[92] (byte 94 na numeração do app) — Stay reportado pela
-    # própria central (diferente do nosso controle local de "o último
-    # comando enviado foi Stay", usado por todos os outros modelos).
-    stay_a_reported: bool | None = None
-    stay_b_reported: bool | None = None
 
     # Só zonas 25-48 têm esses dados no app oficial (zonas 1-24 são
     # sempre fiadas nessa central; 25-48 são a faixa sem fio/expansão).
@@ -613,11 +637,6 @@ def parse_status_2018_esmart_extra(content: bytes) -> ESmartExtraStatus:
             return None
         return bool((content[idx] >> n) & 1)
 
-    # --- Stay reportado pela central (content[92]) ---
-    stay_byte = 92
-    if stay_byte < len(content):
-        extra.stay_a_reported = bit(stay_byte, 0)
-        extra.stay_b_reported = bit(stay_byte, 1)
 
     # --- Zonas 25-48: bitmaps de 3 bytes cada (zonas 25-48 = 24 zonas =
     # 3 bytes de 8 bits), começando no offset-base de cada campo + o
@@ -711,7 +730,12 @@ def parse_status_2018_esmart_extra(content: bytes) -> ESmartExtraStatus:
 
 def parse_status_4010(content: bytes) -> PanelStatus:
     """Parseia a resposta do comando 0x5B (até 54 bytes) — família 4010."""
-    from .const import MODEL_TABLE, MODEL_UNKNOWN
+    from .const import (
+        AMT4010_STAY_STATUS_MIN_FIRMWARE,
+        MODEL_4010_SMART,
+        MODEL_TABLE,
+        MODEL_UNKNOWN,
+    )
 
     zones_open = _bits_to_zone_map(content, 1, 8, 64)
     zones_violated = _bits_to_zone_map(content, 9, 8, 64)
@@ -755,6 +779,26 @@ def parse_status_4010(content: bytes) -> PanelStatus:
         "C": ("status29", 0),
         "D": ("status29", 1),
     }
+
+    # Firmware novo da AMT 4010: Status28/29 continuam informando
+    # armado/desarmado nos bits 0/1 e passam a reportar Away/Stay nos
+    # bits 4/5. Firmware anterior NÃO interpreta estes bits como modo.
+    fw_version = ((fw_byte >> 4) & 0x0F, fw_byte & 0x0F)
+    partitions_stay_reported: dict[str, bool] | None = None
+    partition_stay_bit_map: dict[str, tuple[str, int]] = {}
+    if model_key == MODEL_4010_SMART and fw_version >= AMT4010_STAY_STATUS_MIN_FIRMWARE:
+        partitions_stay_reported = {
+            "A": bool((status28 >> 4) & 0x01),
+            "B": bool((status28 >> 5) & 0x01),
+            "C": bool((status29 >> 4) & 0x01),
+            "D": bool((status29 >> 5) & 0x01),
+        }
+        partition_stay_bit_map = {
+            "A": ("status28", 4),
+            "B": ("status28", 5),
+            "C": ("status29", 4),
+            "D": ("status29", 5),
+        }
     # "Ativada" da CENTRAL usa o bit 3 do Status30 — mesma regra confirmada
     # com o usuário, ver o comentário detalhado em parse_status_2018.
     # Cada PARTIÇÃO continua usando seu próprio bit em Status28/29
@@ -846,6 +890,8 @@ def parse_status_4010(content: bytes) -> PanelStatus:
         zones_short_circuit=zones_short_circuit,
         pgm_expander_problem=pgm_expander_problem,
         zone_expander_problem=zone_expander_problem,
+        partitions_stay_reported=partitions_stay_reported,
+        partition_stay_bit_map=partition_stay_bit_map,
     )
 
 

@@ -8,7 +8,64 @@ O histórico de desenvolvimento anterior a esta versão (v1.6.0–v1.8.3) foi
 consolidado na entrada v2.0.0; a partir daqui, toda mudança relevante é
 registrada aqui antes de cada release.
 
-## [2.1.4]
+## [2.1.5]
+
+### Corrigido — suporte ao modo Stay (armed_home) na AMT 4010 SMART, condicionado a firmware
+
+O comando de ativação em modo Stay (0x50) e o relato de Away/Stay no
+próprio STATUS são duas capacidades **independentes** na AMT 4010
+SMART, cada uma liberada a partir de um firmware diferente — antes,
+a família inteira era tratada como "suporta Stay" de forma binária,
+sem considerar firmware:
+
+- **Comando Stay**: a partir do firmware **5.0**. Abaixo disso, o
+  comando existe no protocolo mas a central não implementa esse modo.
+- **STATUS relatando Away/Stay** (Status28/29, bits 4/5 de cada
+  partição): só a partir do firmware **5.70**. Entre 5.0 e 5.69, o
+  comando funciona mas o STATUS não informa o modo — a integração
+  continua dependendo do rastreamento local do último comando enviado.
+
+`alarm_control_panel.supported_features` deixou de ser fixado uma vez
+no `__init__` (`self._attr_supported_features`) e passou a ser uma
+`@property` reavaliada a cada consulta — corrige um bug real: antes,
+se a entidade fosse criada antes do primeiro STATUS válido chegar, a
+decisão sobre oferecer ou não o modo Home ficava congelada,
+possivelmente errada, pelo resto da sessão.
+
+Nos modelos/firmwares com telemetria real de Stay (AMT 4010 ≥ 5.70,
+AMT 2018 E SMART), a própria central passa a ser a fonte autoritativa
+— corrige a entidade agregada da central podendo ficar `armed_home`
+enquanto as partições individuais continuavam `armed_away` (e
+vice-versa), e ativações feitas pelo teclado físico ou outro app agora
+também entram corretamente nas contagens Home/Away, não só as feitas
+pelo Home Assistant. Um desarme confirmado pelo STATUS sempre invalida
+a memória de Stay daquela partição, mesmo em modelos sem telemetria —
+evita que um modo antigo sobreviva a um desarme externo e contamine a
+próxima ativação.
+
+Generaliza o mecanismo antes específico da AMT 2018 E SMART
+(`esmart_extra.stay_a_reported`/`stay_b_reported`) para um campo comum
+em `PanelStatus` (`partitions_stay_reported`, com
+`partition_stay_bit_map` para diagnóstico de qual byte/bit originou
+cada valor), reutilizável por qualquer modelo/firmware com telemetria
+real — usado agora tanto pela 2018 E SMART quanto pela 4010 ≥ 5.70.
+
+Validado com as funções reais de sincronização (`_sync_reported_stay_
+mode`, `_remember_local_stay_command`) extraídas via AST, em 4
+cenários: modelo sem telemetria preservando a memória local até um
+desarme invalidá-la; modelo com telemetria sendo sobrescrito pelo
+valor autoritativo da central (com a entidade agregada priorizando
+Stay corretamente); comando global propagado para todas as partições
+só quando não há telemetria disponível; e confirmação de que essa
+propagação **não** acontece quando há telemetria (deixando o próximo
+STATUS decidir). Limiares de firmware (5.0 e 5.70) testados nos dois
+lados de cada fronteira, incluindo o caso limite 5.6 vs. 5.7.
+
+### Corrigido — ordem de leitura do sensor "Último evento (Receptor IP)"
+
+Quando o evento pertence a uma partição, ela agora aparece primeiro no
+texto (ex.: "Partição B — Desativado por — HA"), evitando o formato
+invertido de antes ("Desativado por — Partição B — HA").
 
 ### Corrigido — função morta removida definitivamente
 

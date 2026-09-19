@@ -17,6 +17,8 @@ from . import protocol_legacy_eeprom as legacy_eeprom
 from .names_state import async_save_names
 from .const import (
     ACK_OK,
+    AMT4010_STAY_COMMAND_MIN_FIRMWARE,
+    AMT4010_STAY_STATUS_MIN_FIRMWARE,
     AMT8000_ALL_PARTITIONS,
     AMT8000_EVENT_BUFFER_SIZE,
     AMT8000_MODE_ARM,
@@ -48,6 +50,7 @@ from .const import (
     FAMILY_STATUS_LEN,
     InvalidZoneSpec,
     MODEL_2018_SMART,
+    MODEL_4010_SMART,
     MODEL_AMT_8000,
     MODEL_STATUS_CMD_OVERRIDE,
     MODEL_STATUS_MIN_LEN_OVERRIDE,
@@ -170,8 +173,11 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # enriquecer os logs; não suprime warnings, não muda disponibilidade
         # e não altera a janela de saúde de 10s.
         self.network_restart_in_progress = False
-        # Rastreamento local do modo de ativação (stay/away), pois o status
-        # da central não informa o modo, apenas se está ativada ou não.
+        # Modo efetivo de ativação (stay/away). Nos modelos/firmwares que
+        # não reportam esse dado no STATUS, continua sendo rastreado
+        # localmente pelo último comando enviado pelo HA. Quando a própria
+        # central reporta Stay, este cache é sincronizado a cada STATUS
+        # válido com o valor autoritativo recebido da central.
         self.armed_home_mode: dict[str, bool] = {"CENTRAL": False, "A": False, "B": False, "C": False, "D": False}
         # Descrição textual do resultado do último comando enviado (ACK/NACK),
         # útil como diagnóstico (ex.: "Senha incorreta"), exposta pelo sensor
@@ -700,20 +706,48 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         """
         return zone in self._enabled_zones
 
-    @property
-    def supports_stay(self) -> bool:
-        """Se este modelo suporta de verdade o comando de ativação em modo Stay.
+    def _current_firmware_tuple(self) -> tuple[int, int] | None:
+        """Firmware atual como ``(major, minor)`` ou ``None`` se ainda desconhecido."""
+        if self.data is None:
+            return None
+        try:
+            major_str, minor_str = self.data.firmware.split(".", 1)
+            return int(major_str), int(minor_str)
+        except (ValueError, AttributeError):
+            return None
 
-        Confirmado pelo usuário: a 4010 e a AMT 2018 E SMART respondem
-        corretamente ao comando 0x50 — nos demais modelos da família 2018
-        (E/EG, 1016 NET, ANM 24 Net e os demais bytes da tabela) o comando
-        existe no protocolo mas a central não implementa esse modo. Usado
-        para remover a opção `armed_home` da UI nesses modelos (ver
-        alarm_control_panel.py).
+    @property
+    def supports_stay_command(self) -> bool:
+        """Se a central pode receber um comando de ativação em modo Stay.
+
+        Esta capacidade é deliberadamente separada de
+        ``reports_stay_status``. Na AMT 4010, por exemplo, o comando Stay
+        existe a partir do firmware 5.0, mas o STATUS só passa a dizer
+        Away/Stay a partir do 5.70.
         """
         from .const import MODELS_SUPPORTING_STAY
 
+        if self.model_key == MODEL_4010_SMART:
+            firmware = self._current_firmware_tuple()
+            return firmware is not None and firmware >= AMT4010_STAY_COMMAND_MIN_FIRMWARE
         return self.model_key in MODELS_SUPPORTING_STAY
+
+    @property
+    def reports_stay_status(self) -> bool:
+        """Se o STATUS atual possui uma fonte autoritativa de Away/Stay."""
+        if self.data is None:
+            return False
+        if self.data.partitions_stay_reported is not None:
+            return True
+        if self.model_key == MODEL_4010_SMART:
+            firmware = self._current_firmware_tuple()
+            return firmware is not None and firmware >= AMT4010_STAY_STATUS_MIN_FIRMWARE
+        return False
+
+    @property
+    def supports_stay(self) -> bool:
+        """Compatibilidade interna: alias histórico de ``supports_stay_command``."""
+        return self.supports_stay_command
 
     @property
     def password(self) -> str:
@@ -942,6 +976,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         if self.network_restart_in_progress:
             self.network_restart_in_progress = False
 
+        # Se este STATUS traz Stay autoritativo, sincroniza o modo antes
+        # de as entidades consumirem o novo estado. Em firmware antigo é no-op.
+        self._sync_reported_stay_mode(status)
+
         # Sucesso: reseta a marca de tempo de "última consulta boa", usada
         # pela lógica de tolerância acima. Se estava marcado como falho,
         # avisa UMA VEZ que voltou a funcionar (pedido explícito do
@@ -968,11 +1006,12 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         # (ver README, seção "Diagnóstico").
         _LOGGER.debug(
             "status recebido: conteúdo=%s | %sactivated(central)=%s partitions_armed=%s "
-            "zone_triggered=%s siren_on=%s problem=%s",
+            "partitions_stay_reported=%s zone_triggered=%s siren_on=%s problem=%s",
             response.content.hex(" ").upper(),
             "(bruto inalterado, reaproveitado sem reinterpretar) " if not resposta_mudou else "",
             status.activated,
             status.partitions_armed,
+            status.partitions_stay_reported,
             status.zone_triggered,
             status.siren_on,
             status.problem,
@@ -1058,6 +1097,10 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             self._poll_failure_logged = False
         self._last_poll_success_monotonic = time.monotonic()
 
+        # Mesmo cuidado de cache usado nas demais famílias: ao menos um
+        # desarme confirmado pelo STATUS sempre invalida memória local de Stay.
+        self._sync_reported_stay_mode(status)
+
         _LOGGER.debug(
             "AMT 8000 status recebido: conteúdo=%s | %sactivated=%s partitions_armed=%s "
             "zone_triggered=%s siren_on=%s problem=%s",
@@ -1071,6 +1114,59 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
         )
         self.last_status_raw = response.content.hex(" ").upper()
         return status
+
+    def _sync_reported_stay_mode(self, status: PanelStatus) -> None:
+        """Mantém o cache local de Stay coerente com cada STATUS válido.
+
+        Quando ``partitions_stay_reported`` existe, a própria central é a
+        fonte autoritativa para Away/Stay. Quando não existe, preservamos o
+        rastreamento local dos comandos emitidos pelo Home Assistant, mas
+        limpamos com segurança qualquer memória de Stay de uma partição que
+        o STATUS confirmou como desarmada — um modo antigo não pode sobreviver
+        a um desarme externo e contaminar a próxima ativação.
+
+        Na entidade agregada da central, Stay sempre tem prioridade: se
+        qualquer partição atualmente armada estiver em Stay, a central é
+        ``armed_home``; só fica ``armed_away`` quando nenhuma partição armada
+        estiver em Stay.
+        """
+        reported = status.partitions_stay_reported
+
+        # Desarmado é informação autoritativa mesmo nas centrais que não
+        # conseguem dizer Away x Stay. Portanto sempre invalida o cache de
+        # modo daquela partição.
+        for partition, armed in status.partitions_armed.items():
+            if not armed:
+                self.armed_home_mode[partition] = False
+
+        if reported is not None:
+            # Telemetria real: para cada partição armada cujo modo é
+            # reportado, substitui a memória local pelo valor da central.
+            for partition, armed in status.partitions_armed.items():
+                if armed and partition in reported:
+                    self.armed_home_mode[partition] = bool(reported[partition])
+
+            # Prioridade Stay para a entidade agregada: qualquer partição
+            # armada em Stay torna a central ``armed_home``.
+            self.armed_home_mode["CENTRAL"] = any(
+                armed and reported.get(partition, False)
+                for partition, armed in status.partitions_armed.items()
+            )
+            return
+
+        # Sem telemetria Away/Stay, só podemos usar o que o HA sabe. Se a
+        # central inteira está desarmada, a memória do último comando global
+        # também fica necessariamente inválida.
+        if not status.activated:
+            self.armed_home_mode["CENTRAL"] = False
+            return
+
+        # Preserva um Stay global enviado pelo HA e também promove a central
+        # a Home quando qualquer partição armada foi colocada em Stay pelo HA.
+        self.armed_home_mode["CENTRAL"] = self.armed_home_mode.get("CENTRAL", False) or any(
+            armed and self.armed_home_mode.get(partition, False)
+            for partition, armed in status.partitions_armed.items()
+        )
 
     def _handle_poll_failure(self, err: Exception) -> None:
         """Decide se uma falha de CONSULTA DE STATUS é tolerada ou definitiva.
@@ -1189,6 +1285,41 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
     # ------------------------------------------------------------------
     # Comandos de alto nível usados pelas entidades
     # ------------------------------------------------------------------
+    def _remember_local_stay_command(self, partition: str | None, stay: bool) -> None:
+        """Atualiza o cache local de Away/Stay após um comando aceito.
+
+        Em centrais sem telemetria autoritativa de Stay (por exemplo,
+        AMT 4010 SMART 5.0--5.69), um comando global precisa atualizar
+        também cada partição individual. Caso contrário, a entidade
+        agregada pode ficar ``armed_home`` enquanto A/B/C/D continuam
+        ``armed_away`` e os sensores de contagem Home/Away ficam
+        incoerentes.
+
+        Quando existe telemetria real, mantemos apenas a estimativa do
+        alvo comandado: o próximo STATUS substitui o cache pelos bits
+        reportados pela própria central.
+        """
+        key = partition or "CENTRAL"
+        self.armed_home_mode[key] = stay
+
+        if partition is not None or self.reports_stay_status:
+            return
+
+        # Sem telemetria Away/Stay, um comando global vale para todas as
+        # partições daquele modelo. A propagação é igualmente necessária
+        # para Stay=True e Stay=False: um Away global precisa limpar um
+        # Stay individual antigo para que _sync_reported_stay_mode() não
+        # promova CENTRAL de volta a Home no STATUS seguinte.
+        if self.family == FAMILY_8000:
+            partitions = (str(n) for n in range(1, 17))
+        elif self.family == FAMILY_4010:
+            partitions = ("A", "B", "C", "D")
+        else:
+            partitions = ("A", "B")
+
+        for part in partitions:
+            self.armed_home_mode[part] = stay
+
     async def async_arm(self, partition: str | None, stay: bool, password: str | None = None) -> None:
         if self.family == FAMILY_8000:
             mode = AMT8000_MODE_STAY if stay else AMT8000_MODE_ARM
@@ -1196,16 +1327,14 @@ class IntelbrasAlarmCoordinator(DataUpdateCoordinator[PanelStatus]):
             frame = amt8000.cmd_arm_disarm(partition_num, mode)
             label = f"Ativar {_partition_label(partition)}" + (" (Stay)" if stay else "")
             await self._send_and_check_amt8000(frame, label)
-            key = partition or "CENTRAL"
-            self.armed_home_mode[key] = stay
+            self._remember_local_stay_command(partition, stay)
             await self.async_request_status_refresh()
             return
         code = None if partition is None else _partition_code(partition)
         frame = cmd_arm(password or self._password, code, stay=stay)
         label = f"Ativar {_partition_label(partition)}" + (" (Stay)" if stay else "")
         await self._send_and_check(frame, label)
-        key = partition or "CENTRAL"
-        self.armed_home_mode[key] = stay
+        self._remember_local_stay_command(partition, stay)
         await self.async_request_status_refresh()
 
     async def async_disarm(self, partition: str | None, password: str | None = None) -> None:

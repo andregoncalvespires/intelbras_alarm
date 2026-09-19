@@ -212,13 +212,17 @@ já passaram por outras condições), com risco maior de erro sem hardware
 real pra validar; os demais campos usam um padrão bem mais simples (1
 bit por zona, a cada 8 zonas), que replicamos com confiança.
 
-**Stay reportado pela central** — atributo novo `stay_reportado_pela_central`
-nas entidades de partição (e `stay_reportado_particao_a`/`_b` na central).
-Diferente do estado `armed_home` já existente (que usa o controle local
-desta integração, lembrando qual foi o último comando enviado — o único
-mecanismo que funciona pra todos os outros modelos, já que eles não
-reportam isso na resposta), esse atributo novo reflete o que a **própria
-central diz** sobre o modo Stay de cada partição (byte 94 da resposta).
+**Stay reportado pela central** — atributo `stay_reportado_pela_central`
+nas entidades de partição (mecanismo genérico, `PanelStatus.
+partitions_stay_reported`/`partition_stay_bit_map` — ver "Modo Stay
+por partição" mais abaixo para a versão completa, incluindo o mesmo
+mecanismo reaproveitado pela AMT 4010 a partir do firmware 5.70).
+Diferente do estado `armed_home` "de controle local" (que rastreia
+qual foi o último comando enviado por esta integração — o único
+mecanismo disponível nos modelos/firmwares que não reportam Stay na
+resposta), esse atributo reflete o que a **própria central diz** sobre
+o modo Stay de cada partição (byte 94 da resposta, nesta família
+especificamente).
 
 **Achado que precisa de confirmação em campo**: na captura real fornecida
 pelo usuário, o byte correspondente às "zonas sem fio 25-31" veio como
@@ -1166,17 +1170,28 @@ isso que `armed_home` funciona tanto na central quanto em cada partição.
 > nesse ponto específico, o comportamento real de campo é mais confiável
 > do que a tabela da doc, que simplesmente não cobre esse caso.
 
-**Restrição por modelo, confirmada em testes**: o modo Stay só funciona de
-verdade na **AMT 4010 SMART** e na **AMT 2018 E SMART** — nos demais
+**Restrição por modelo/firmware, confirmada em testes**: o modo Stay
+só funciona de verdade na **AMT 4010 SMART** (a partir do firmware
+**5.0**) e na **AMT 2018 E SMART** (qualquer firmware) — nos demais
 modelos da família 2018 (AMT 2018 E/EG, AMT 1016 NET, ANM 24 Net e os
 demais bytes da tabela), o comando `0x50` existe no protocolo, mas a
-central não implementa esse modo. Por isso, `armed_home` só aparece como
-opção nas entidades `alarm_control_panel` (central e partições) para
-esses dois modelos —
-nos demais, a feature nem é oferecida na UI (`ARM_HOME` fica de fora de
-`supported_features`), e o método correspondente também recusa a chamada
-com um erro claro, caso seja invocado diretamente por um serviço
-(`coordinator.supports_stay`, verificado em `alarm_control_panel.py`).
+central não implementa esse modo. Por isso, `armed_home` só aparece
+como opção nas entidades `alarm_control_panel` (central e partições)
+nesses casos — nos demais, a feature nem é oferecida na UI (`ARM_HOME`
+fica de fora de `supported_features`, reavaliado dinamicamente a cada
+consulta — não fixado uma vez na criação da entidade, para não travar
+numa decisão tomada antes do primeiro STATUS válido chegar), e o
+método correspondente também recusa a chamada com um erro claro, caso
+seja invocado diretamente por um serviço
+(`coordinator.supports_stay_command`, verificado em
+`alarm_control_panel.py`).
+
+Na AMT 4010, o **comando** Stay (a partir do firmware 5.0) e o
+**STATUS relatando** se cada partição está em Away ou Stay (a partir
+do firmware **5.70**, Status28/29 bits 4/5) são capacidades
+independentes — ver "Stay reportado pela própria central" logo abaixo
+para o segundo caso, e `coordinator.supports_stay_command`/
+`reports_stay_status` no código para a distinção exata.
 
 ---
 

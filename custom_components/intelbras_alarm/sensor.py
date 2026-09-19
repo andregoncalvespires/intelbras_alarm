@@ -223,15 +223,13 @@ class IntelbrasPartitionArmModeSensor(CoordinatorEntity[IntelbrasAlarmCoordinato
     Stay (``armed_home``) sem precisar checar cada `alarm_control_panel`
     individualmente. Usa ``status.partitions_armed`` (o que a central
     reporta de verdade) como fonte da existência/estado "ativada" de
-    cada partição — não ``coordinator.armed_home_mode`` sozinho, que só
-    reflete o que foi comandado *por esta integração*: uma partição
-    ativada pelo teclado físico ou por outro app antes do Home Assistant
-    subir não teria uma entrada lá, mas aparece normalmente em
-    ``partitions_armed``. ``armed_home_mode`` só é usado para decidir
-    *qual* dos dois modos, quando a partição já está confirmada como
-    ativada — mesmo critério e mesmo padrão (default "ausente" se nunca
-    rastreado) que ``_BaseAlarmPanel._compute_state()`` já usa para o
-    estado de cada `alarm_control_panel` individual.
+    cada partição. ``coordinator.armed_home_mode`` decide *qual* dos dois
+    modos. Em modelos/firmwares sem Stay no STATUS ele continua lembrando
+    apenas o último comando enviado por esta integração. Quando a central
+    reporta Stay de forma autoritativa (AMT 4010 SMART no limiar de
+    firmware suportado), o coordinator sincroniza esse cache a cada
+    STATUS, então ativações feitas pelo teclado físico ou outro app também
+    entram corretamente nas contagens Home/Away.
 
     Partições com disparo em andamento (``zone_triggered``) não entram
     em nenhuma das duas contagens — mesmo critério de
@@ -424,9 +422,14 @@ class IntelbrasReceptorLastEventSensor(CoordinatorEntity[IntelbrasAlarmCoordinat
         evento = self.coordinator.receptor_last_event
         if evento is None:
             return "Nenhum evento recebido ainda"
-        partes = [evento["descricao"]]
+        # Quando o evento pertence a uma partição, ela vem primeiro no
+        # texto. Ex.: "Partição B — Desativado por — HA". Isso deixa a
+        # leitura natural e evita o formato invertido
+        # "Desativado por — Partição B — HA".
+        partes: list[str] = []
         if evento["particao"] != "-":
             partes.append(f"Partição {evento['particao']}")
+        partes.append(evento["descricao"])
         if evento["zona_usuario"] > 0:
             # Usa o nome (zona ou usuário) quando temos — ver
             # coordinator.on_receptor_event() e const.RECEPTOR_IP_EVENT_SUBJECT.

@@ -376,13 +376,28 @@ def parse_zone_spec(spec: str, max_zone: int = 64) -> set[int]:
         raise InvalidZoneSpec(f"Zonas devem estar entre 1 e {max_zone}")
     return zones
 
-# Modelos cujo comando de ativação em modo Stay (0x50) é suportado de
-# verdade pela central — confirmado pelo usuário: a família 4010 e a
-# AMT 2018 E SMART respondem corretamente a esse comando; nas demais
-# (2018 E/EG, 1016 NET, ANM 24 Net e os demais bytes da tabela) o comando
-# existe no protocolo mas a central não implementa esse modo de fato.
-# A AMT 8000 (protocolo próprio) também suporta Stay, ver protocol_amt8000.py.
-MODELS_SUPPORTING_STAY = {MODEL_4010_SMART, MODEL_2018_SMART, MODEL_AMT_8000}
+# Stay é dividido em duas capacidades independentes:
+#
+# 1) aceitar o comando de ativação em Stay (ARM_HOME);
+# 2) informar no STATUS se a partição armada está em Away ou Stay.
+#
+# Não usar a escolha de transporte EEPROM (0x5C/E7) para inferir nenhuma
+# delas — são recursos independentes.
+#
+# Modelos cujo comando Stay é suportado sem condição de firmware conhecida.
+# A AMT 4010 é tratada separadamente logo abaixo porque o suporte ao comando
+# só existe a partir do firmware 5.0, enquanto a telemetria de Stay só surge
+# depois, no firmware 5.70.
+MODELS_SUPPORTING_STAY = {MODEL_2018_SMART, MODEL_AMT_8000}
+
+# AMT 4010 SMART: firmware mínimo que aceita ativação em modo Stay.
+# Confirmado pelo usuário com múltiplos firmwares/changelog da central.
+AMT4010_STAY_COMMAND_MIN_FIRMWARE = (5, 0)
+
+# AMT 4010 SMART: a partir deste firmware, Status28/Status29 passam a
+# reportar também o modo de ativação de cada partição nos bits 4/5.
+# O protocolo codifica 5.70 como 5.7 (byte BCD 0x57).
+AMT4010_STAY_STATUS_MIN_FIRMWARE = (5, 7)
 
 # Nº máximo de zonas cobertas pelos bytes de status de cada família (limite
 # do protocolo — ver MODEL_ZONE_COUNT para o nº de entidades por modelo,

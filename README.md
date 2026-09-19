@@ -172,9 +172,10 @@ não são editáveis ali (esse último só funciona na configuração inicial)
 
 - **Alarme** (`alarm_control_panel`): uma para a central e uma para cada
   partição (se a central estiver particionada). Estados: desarmada,
-  armada ausente, armada presente (Stay — AMT 4010 SMART, AMT 2018
-  E SMART e AMT 8000) e disparada — os mesmos estados que uma central de
-  alarme de verdade tem, com suporte a código/senha na própria interface.
+  armada ausente, armada presente (Stay — AMT 4010 SMART com firmware
+  5.0 ou superior, AMT 2018 E SMART e AMT 8000) e disparada — os mesmos
+  estados que uma central de alarme de verdade tem, com suporte a
+  código/senha na própria interface.
 
   ![Painel de controle da central AMT 4010 SMART armada em modo presente (Stay)](docs/images/controle-armado-em-casa-4010.jpeg)
 
